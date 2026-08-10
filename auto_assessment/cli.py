@@ -10,7 +10,6 @@ from rich.console import Console
 from rich.json import JSON
 from rich.panel import Panel
 
-from auto_assessment.agent import AssessmentAgent
 from auto_assessment.llm import create_agent
 
 load_dotenv()
@@ -47,11 +46,6 @@ def _run_llm_assessment(payload: Dict[str, Any]) -> str:
     return _extract_text(result["messages"][-1]["content"])
 
 
-def _run_baseline_assessment(payload: Dict[str, Any]) -> str:
-    agent = AssessmentAgent()
-    return json.dumps(agent.assess_payload(payload), indent=2)
-
-
 def _validate_payload(payload_path: Path) -> Path:
     if not payload_path.exists():
         console.print(f"[red]Error:[/red] Payload not found: {payload_path}")
@@ -62,7 +56,6 @@ def _validate_payload(payload_path: Path) -> Path:
 @app.command()
 def assess(
     payload: Path = typer.Argument(..., help="Path to a JSON payload file"),
-    llm: bool = typer.Option(False, "--llm", help="Use optional LLM-based grading"),
 ) -> None:
     """Grade an answer sheet against a rubric."""
     payload = _validate_payload(payload)
@@ -71,7 +64,7 @@ def assess(
         data: Dict[str, Any] = json.load(handle)
 
     with console.status("Assessing answers..."):
-        raw_output = _run_llm_assessment(data) if llm else _run_baseline_assessment(data)
+        raw_output = _run_llm_assessment(data)
 
     formatted = _extract_and_format_response(raw_output)
     console.print(Panel(formatted, title="Assessment Result", border_style="green"))

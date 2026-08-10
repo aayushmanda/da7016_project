@@ -61,7 +61,27 @@ class AssessmentAgent:
 
     def _score_criterion(self, student_answer: str, model_answer: str, description: str, weight: int) -> float:
         combined_text = f"{student_answer} {model_answer}".lower()
-        desc_terms = re.findall(r"\w+", description.lower())
+        stopwords = {
+            "defines",
+            "define",
+            "explains",
+            "explain",
+            "provides",
+            "provide",
+            "a",
+            "an",
+            "the",
+            "and",
+            "or",
+            "of",
+            "with",
+            "to",
+            "clear",
+            "student",
+            "answer",
+            "learning",
+        }
+        desc_terms = [term for term in re.findall(r"\w+", description.lower()) if term not in stopwords]
         if not desc_terms:
             return 0.0
 

@@ -39,7 +39,7 @@ class LLMAssessmentAgent:
             raise ValueError("Payload must include a messages list.")
 
         message = messages[-1]
-        query = self._extract_text(message.content)
+        query = self._extract_text(message if isinstance(message, dict) else message.content)
 
         if self.openai_api_key and openai and "grade" in query.lower() and "rubric" in query.lower():
             content = self._grade_with_openai(query)
@@ -47,6 +47,15 @@ class LLMAssessmentAgent:
             content = self._fallback_response(query)
 
         return {"messages": [{"content": content}]}
+
+    def _extract_text(self, content: str | list[dict] | dict) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, dict):
+            return self._extract_text(content.get("content", ""))
+        if isinstance(content, list):
+            return " ".join(str(item) for item in content)
+        return str(content)
 
     def _grade_with_openai(self, query: str) -> str:
         payload = self._build_openai_payload(query)

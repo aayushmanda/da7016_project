@@ -31,25 +31,56 @@ Set `OPENAI_API_KEY` in your environment and run:
 python -m auto_assessment.cli examples/sample_payload.json --llm
 ```
 
-### Start the frontend-backed API
+### Start the backend API
 
 ```bash
 uvicorn auto_assessment.web:app --reload
 ```
 
-Open `http://127.0.0.1:8000/` in your browser to use the web interface.
+The backend exposes the grading and chat APIs at:
+
+- `POST /api/assess` for assessment payloads and optional file uploads
+- `POST /api/chat` for agent chat messages
+- `GET /health` for a simple health check
+
+### Run the React frontend
+
+Open a second terminal and run:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Then open the local Vite URL shown in the terminal. The frontend proxies `/api` to `http://127.0.0.1:8000`.
 
 ### API-only access
 
-Send payloads directly to `/assess`:
+Send payloads directly to `/api/assess` with a multipart form:
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/assess" \
-  -H "Content-Type: application/json" \
-  -d @examples/sample_payload.json
+curl -X POST "http://127.0.0.1:8000/api/assess" \
+  -F "payload=@examples/sample_payload.json;type=application/json"
 ```
 
-Use `?llm=true` to enable the optional LLM-based grading mode if `OPENAI_API_KEY` is configured.
+Upload an image or PDF alongside the payload:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/assess" \
+  -F "payload=@examples/sample_payload.json;type=application/json" \
+  -F "file=@/path/to/document.pdf"
+```
+
+Send a chat message:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/chat" \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "What did the student miss in this answer?"}]}'
+```
+
+Set `OPENAI_API_KEY` in your environment to enable richer LLM grading and chat responses.
 
 ## Roadmap
 

@@ -1,0 +1,17 @@
+{
+  "questions": [
+    {
+      "id": "q1",
+      "prompt": "Explain the difference between supervised and unsupervised learning.",
+      "model_answer": "Supervised learning uses labeled data to train a model, whereas unsupervised learning finds patterns in unlabeled data.",
+      "rubric": [
+        {"description": "Defines supervised learning", "weight": 4},
+        {"description": "Defines unsupervised learning", "weight": 4},
+        {"description": "Provides a clear contrast", "weight": 2}
+      ]
+    }
+  ],
+  "answers": {
+    "q1": "Supervised learning uses labeled data. Unsupervised learning finds patterns in unlabeled data."
+  }
+}

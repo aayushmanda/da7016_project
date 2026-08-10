@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Auto-Assessment</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <span class="eyebrow">Auto-Assessment</span>
+          <h1>Grade answers with rubric-defensible feedback</h1>
+          <p>
+            Paste student answers, rubric criteria, and model answers to receive
+            structured scoring and actionable improvement feedback.
+          </p>
+        </div>
+      </header>
+
+      <main>
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Assessment payload</h2>
+            <button id="sampleButton" class="button button-secondary">Load sample payload</button>
+          </div>
+
+          <textarea id="payloadInput" aria-label="Assessment payload JSON"></textarea>
+          <div class="actions">
+            <label class="checkbox">
+              <input type="checkbox" id="llmCheckbox" />
+              Use optional LLM grading
+            </label>
+            <button id="submitButton" class="button button-primary">Run assessment</button>
+          </div>
+        </section>
+
+        <section class="panel result-panel">
+          <div class="panel-header">
+            <h2>Result</h2>
+          </div>
+          <pre id="resultOutput" aria-live="polite">Submit a payload to see the assessment result.</pre>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

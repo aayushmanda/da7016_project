@@ -1,7 +1,5 @@
 # Auto-Assessment Agent
 
-# Auto-Assessment Agent
-
 This repository contains a rubric-based assessment engine that grades student answers and produces detailed, rubric-defensible feedback.
 
 ## What is included

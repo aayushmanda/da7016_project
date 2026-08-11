@@ -42,8 +42,8 @@ The web UI is a single-page app with three views reachable from a persistent sid
 - **Score Feed** — summary stats (average score, total points, questions graded, full-marks count) followed by a per-question breakdown with rubric criteria, or a raw JSON view for debugging/export
 - **Agent Chat** — ask follow-up questions about the grading (e.g. "Why did Q1 lose points?") or request adjustments
 
-![Upload view](images/upload.png>) 
-![Score Feed view](images/score_feed.png>)
+![Upload view](<images/upload.png>) 
+![Score Feed view](<images/score_feed.png>)
 ![Agent Chat view](<images/agent_chat.png>)
 
 ## Installation

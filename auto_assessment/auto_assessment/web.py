@@ -1,127 +1,138 @@
-from __future__ import annotations
+import io
+import os
+from typing import Optional, List
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
 
-import json
-from pathlib import Path
-from typing import Any, Dict
-from uuid import uuid4
+# Import the assessment agent
+from agent import RubricAssessmentAgent
 
-from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+app = FastAPI(title="Multi-Agent Assessment API")
 
-from auto_assessment.llm import create_agent
-
-
-class ChatPayload(BaseModel):
-    messages: list[Dict[str, Any]]
-    has_assessment: bool = False
-
-    class Config:
-        extra = "allow"
-
-
-app = FastAPI(
-    title="Auto-Assessment API",
-    description="Document-first grading API",
-    version="0.2.0",
+# Enable CORS for frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-frontend_dir = Path(__file__).resolve().parents[1] / "frontend"
-uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
-uploads_dir.mkdir(exist_ok=True)
+assessment_system = RubricAssessmentAgent()
 
 
-def _save_uploaded_file(upload: UploadFile) -> Dict[str, Any]:
-    file_bytes = upload.file.read()
-    saved_filename = f"{uuid4().hex}_{upload.filename}"
-    saved_path = uploads_dir / saved_filename
-    saved_path.write_bytes(file_bytes)
-
-    extracted_text = ""
-    if upload.content_type and "text" in upload.content_type:
-        try:
-            extracted_text = file_bytes.decode("utf-8", errors="ignore")
-        except Exception:
-            pass
-
-    return {
-        "filename": upload.filename,
-        "content_type": upload.content_type,
-        "size": len(file_bytes),
-        "saved_path": str(saved_path),
-        "text_content": extracted_text,
-    }
-
-
-@app.get("/health")
-def health_check() -> Dict[str, str]:
-    return {"status": "ok", "service": "auto-assessment"}
-
+# =====================================================================
+# API ENDPOINTS
+# =====================================================================
 
 @app.post("/api/assess")
-def assess(
-    rubric_file: UploadFile | None = File(None),
-    answer_file: UploadFile | None = File(None),
-    instructions: str | None = Form(None),
-) -> Dict[str, Any]:
-    if not rubric_file and not answer_file:
-        return {"error": "Please upload at least an answer sheet or rubric file."}
+async def assess_submission(request: Request):
+    """
+    Dynamically parses uploaded form files and text regardless of the field names 
+    sent by the frontend UI.
+    """
+    try:
+        form = await request.form()
+        
+        # Extract text inputs safely
+        qp_text = str(form.get("question_paper_text") or form.get("question_paper") or form.get("rubric_text") or form.get("rubric") or "")
+        rubric_text = str(form.get("rubric_text") or form.get("rubric") or "")
+        student_text = str(form.get("student_answer_text") or form.get("student_text") or form.get("student_answer") or "")
+        custom_instructions = str(form.get("custom_instructions") or form.get("instructions") or "")
 
-    rubric_info = _save_uploaded_file(rubric_file) if rubric_file else None
-    answer_info = _save_uploaded_file(answer_file) if answer_file else None
+        qp_images: List[Image.Image] = []
+        student_images: List[Image.Image] = []
 
-    prompt = (
-        "You are an expert grading agent. Evaluate the provided student answer sheet against the rubric document.\n"
-        "Return a strictly formatted JSON array where each object contains:\n"
-        "- question_id: string (e.g. 'Question 1')\n"
-        "- score: float score out of 10\n"
-        "- feedback: detailed feedback summary\n"
-        "- criterion_scores: list of objects with {description, weight, score}\n\n"
-    )
+        # Iterate over all uploaded files in the form payload
+        for key in form.keys():
+            form_fields = form.getlist(key) if hasattr(form, "getlist") else [form[key]]
+            for val in form_fields:
+                if hasattr(val, "filename") and val.filename:
+                    content = await val.read()
+                    if not content:
+                        continue
+                    try:
+                        img = Image.open(io.BytesIO(content))
+                        key_lower = key.lower()
+                        fname_lower = val.filename.lower()
 
-    if instructions:
-        prompt += f"Custom Grading Instructions:\n{instructions}\n\n"
+                        # Categorize images by field key or filename
+                        if any(k in key_lower or k in fname_lower for k in ["ques", "qp", "paper", "rubric", "1"]):
+                            qp_images.append(img)
+                        elif any(k in key_lower or k in fname_lower for k in ["sol", "ans", "student", "sheet", "2"]):
+                            student_images.append(img)
+                        else:
+                            # Fallback classification
+                            if not qp_images:
+                                qp_images.append(img)
+                            else:
+                                student_images.append(img)
+                    except Exception as img_err:
+                        print(f"⚠️ Could not load image file '{val.filename}': {img_err}")
 
-    if rubric_info:
-        prompt += f"Rubric File: {rubric_info['filename']} ({rubric_info['size']} bytes)\n"
-        if rubric_info["text_content"]:
-            prompt += f"Rubric Content:\n{rubric_info['text_content']}\n\n"
+        print(f"📸 Loaded {len(qp_images)} Question Paper image(s) & {len(student_images)} Student Solution image(s).")
 
-    if answer_info:
-        prompt += f"Answer Sheet File: {answer_info['filename']} ({answer_info['size']} bytes)\n"
-        if answer_info["text_content"]:
-            prompt += f"Answer Content:\n{answer_info['text_content']}\n\n"
+        # Execute multi-agent grading pipeline
+        report = assessment_system.process_submission(
+            question_paper_text=qp_text,
+            rubric_text=rubric_text,
+            student_answer_text=student_text,
+            qp_images=qp_images,
+            student_images=student_images,
+            custom_instructions=custom_instructions
+        )
 
-    agent = create_agent()
-    result = agent.invoke({
-        "messages": [{"content": prompt}],
-        "rubric_info": rubric_info,
-        "answer_info": answer_info,
-    })
+        return report.model_dump()
 
-    content = result["messages"][-1]["content"]
-
-    if isinstance(content, str):
-        try:
-            parsed = json.loads(content)
-            return {"result": parsed, "rubric_file": rubric_info, "answer_file": answer_info}
-        except json.JSONDecodeError:
-            return {"result": content, "rubric_file": rubric_info, "answer_file": answer_info}
-
-    return {"result": content, "rubric_file": rubric_info, "answer_file": answer_info}
+    except Exception as e:
+        print(f"❌ Assessment Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/chat")
-def chat(payload: ChatPayload) -> Dict[str, Any]:
-    messages = payload.messages
-    prompt = messages[-1]["content"] if messages else ""
+async def chat_with_agent(request: Request):
+    """
+    Universally extracts chat query text regardless of JSON key formatting 
+    (supports message, user_message, text, query, prompt, content).
+    """
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
 
-    agent = create_agent()
-    result = agent.invoke({"messages": [{"content": prompt}]})
-    content = result["messages"][-1]["content"]
+        # Scan for common chat input keys sent by various frontends
+        user_msg = (
+            body.get("message") or 
+            body.get("user_message") or 
+            body.get("prompt") or 
+            body.get("query") or 
+            body.get("text") or 
+            body.get("content") or 
+            ""
+        ).strip()
 
-    return {"answer": content}
+        if not user_msg:
+            raise HTTPException(status_code=400, detail="No message body provided in chat payload.")
+
+        reply = assessment_system.verify_and_chat(user_msg)
+        
+        # Return response under multiple standard JSON keys
+        return {
+            "response": reply,
+            "reply": reply,
+            "message": reply,
+            "text": reply
+        }
+
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        print(f"❌ Chat Processing Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-if frontend_dir.exists():
-    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("web:app", host="0.0.0.0", port=8000, reload=True)

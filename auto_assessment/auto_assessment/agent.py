@@ -1,180 +1,353 @@
 import os
-from typing import List, Any
+import json
+import base64
+import io
+import re
+from typing import List, Optional, Any
 from pydantic import BaseModel, Field
+from groq import Groq
+from PIL import Image
+import instructor
 
-from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-
-# ==========================================
-# 1. Pydantic Schemas for Structured Output
-# ==========================================
+# =====================================================================
+# 1. PYDANTIC SCHEMAS (DATA CONTRACTS)
+# =====================================================================
 
 class CriterionScore(BaseModel):
-    description: str = Field(description="Description of the rubric criterion")
-    weight: float = Field(description="Maximum score possible for this specific criterion")
-    score: float = Field(description="Score awarded to the student for this criterion")
-    feedback: str = Field(description="Feedback on this specific criterion")
+    description: str = Field(description="Description of the rubric criterion evaluated")
+    score: float = Field(description="Points awarded for this criterion")
+    weight: float = Field(description="Maximum allocated points for this criterion")
+    feedback: Optional[str] = Field(default="", description="Specific evaluation notes")
 
 
 class QuestionEvaluation(BaseModel):
-    question_id: str = Field(description="Identifier for the question (e.g. 'q1', 'Question 1')")
-    score: float = Field(description="Total earned score for this question")
-    max_score: float = Field(description="Dynamic maximum score possible for this question based on rubric weights")
-    feedback: str = Field(description="Actionable summary feedback for this question")
-    criterion_scores: List[CriterionScore] = Field(description="Criteria breakdown")
+    question_id: str = Field(description="Question ID or number (e.g. 'Problem 1', 'Q2')")
+    score: float = Field(description="Total score awarded for this question")
+    max_score: float = Field(description="Maximum total score possible for this question")
+    criterion_scores: List[CriterionScore] = Field(default=[], description="Breakdown of individual criteria")
+    feedback: str = Field(description="Detailed grading feedback and step-by-step evaluation")
 
 
 class AssessmentReport(BaseModel):
-    evaluations: List[QuestionEvaluation] = Field(description="List of question assessments")
-    overall_summary: str = Field(description="Overall summary of student performance")
+    evaluations: List[QuestionEvaluation] = Field(description="List of evaluated questions")
+    overall_summary: str = Field(description="Overall summary of the student submission")
 
 
-# ==========================================
-# 2. Rubric Assessment Agent Class (Groq)
-# ==========================================
+# =====================================================================
+# UTILITY & SANITIZATION HELPERS
+# =====================================================================
 
-class RubricAssessmentAgent:
-    def __init__(self, model_name: str = "llama-3.3-70b-versatile", temperature: float = 0.0):
-        # Fetch Groq API Key from environment
-        groq_api_key = os.getenv("GROQ_API_KEY")
-        if not groq_api_key:
-            raise ValueError("GROQ_API_KEY environment variable not found. Please set your API key.")
+def pil_to_base64(img: Image.Image) -> str:
+    """Converts a PIL Image object to a base64 JPEG string for Groq Vision."""
+    buffered = io.BytesIO()
+    img.convert("RGB").save(buffered, format="JPEG")
+    return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-        # Initialize ChatGroq LLM
-        self.llm = ChatGroq(
-            model_name=model_name,
-            temperature=temperature,
-            api_key=groq_api_key
+
+def clean_input_text(text: str) -> str:
+    """
+    Sanitizes prompt input:
+    1. Replaces single backslashes in LaTeX with double backslashes.
+    2. Removes excessive repeated identical lines to break LLM hallucination loops.
+    """
+    if not text:
+        return ""
+
+    # Double-escape backslashes for valid JSON string parsing
+    sanitized = re.sub(r'(?<!\\)\\(?!\\)', r'\\\\', text)
+
+    # Deduplicate consecutive identical lines (prevents infinite repetition loops)
+    lines = sanitized.splitlines()
+    deduped_lines = []
+    prev_line = None
+    repeat_count = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped == prev_line and stripped != "":
+            repeat_count += 1
+            if repeat_count < 3:  # Allow up to 2 identical consecutive lines
+                deduped_lines.append(line)
+        else:
+            prev_line = stripped
+            repeat_count = 0
+            deduped_lines.append(line)
+
+    return "\n".join(deduped_lines)
+
+
+# =====================================================================
+# 2. SPECIALIZED LLM AGENTS
+# =====================================================================
+
+class TranscriberAgent:
+    """Agent 1: Converts handwritten sheets into clean text."""
+    def __init__(self, raw_client: Groq):
+        self.client = raw_client
+
+    def run(self, images: List[Image.Image]) -> str:
+        if not images:
+            return ""
+
+        print("🤖 [Agent 1: Transcriber] Transcribing handwritten images...")
+        user_content = [
+            {
+                "type": "text", 
+                "text": "Transcribe all handwritten equations, math proofs, and text verbatim into clean Markdown. Do not repeat text or loop infinitely."
+            }
+        ]
+        
+        for img in images[:5]:
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{pil_to_base64(img)}"}
+            })
+
+        # Updated to active Groq Vision model
+        response = self.client.chat.completions.create(
+            model="qwen/qwen3.6-27b",
+            messages=[{"role": "user", "content": user_content}],
+            temperature=0.0,
+            max_tokens=2048
         )
+        return response.choices[0].message.content or ""
+
+
+class AnswerKeyAgent:
+    """Agent 2: Generates a step-by-step master reference solution."""
+    def __init__(self, raw_client: Groq):
+        self.client = raw_client
+
+    def run(self, question_paper: str, rubric: str) -> str:
+        print("🤖 [Agent 2: Solver] Generating master answer key...")
+        system_prompt = (
+            "You are a master educator. Solve the question paper step-by-step. "
+            "Keep math clear, concise, and accurate."
+        )
+        user_prompt = f"=== QUESTION PAPER ===\n{question_paper}\n\n=== RUBRIC ===\n{rubric}"
+
+        response = self.client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,
+            max_tokens=2048
+        )
+        return response.choices[0].message.content or ""
+
+
+class EvaluatorAgent:
+    """Agent 3: Compares student work against the answer key and rubric."""
+    def __init__(self, instructor_client: instructor.Instructor):
+        self.client = instructor_client
+
+    def run(self, question_paper: str, rubric: str, answer_key: str, student_work: str) -> AssessmentReport:
+        print("🤖 [Agent 3: Evaluator] Grading student submission...")
         
-        # Bind LLM to structured output schema for rubric scoring
-        self.structured_evaluator = self.llm.with_structured_output(AssessmentReport)
-        
-        # Store chat history for verification queries
-        self.chat_history: List[Any] = []
-        
-        # System instructions
-        self.system_prompt = (
-            "You are an expert AI Grading Agent. Your task is to evaluate student answer sheets "
-            "against the provided Question Paper and Rubric.\n\n"
-            "Grading Guidelines:\n"
-            "1. Calculate scores dynamically based on the weights specified in the rubric criteria.\n"
-            "2. Do NOT restrict scores to a scale of 10 unless the rubric explicitly totals 10.\n"
-            "3. Set 'max_score' for each question as the sum of its criterion weights.\n"
-            "4. Be objective, thorough, and provide actionable feedback for missing or partial points.\n"
-            "5. In follow-up chat turns, assist the user in verifying, explaining, or adjusting grades."
+        system_instruction = (
+            "You are an academic evaluator. Output ONLY valid JSON according to the schema.\n"
+            "STRICT FORMATTING RULES:\n"
+            "1. DO NOT output any introductory text, preambles, or conversational statements before or after the JSON payload. Start immediately with '{'.\n"
+            "2. Keep feedback concise and direct to stay within token limits.\n"
+            "3. Do NOT quote full question texts inside feedback fields.\n"
+            "4. NEVER use single raw backslashes (use plain text like 'alpha' or double backslashes '\\\\alpha')."
         )
 
-    def evaluate_submission(
-        self, 
-        rubric_text: str, 
-        question_paper_text: str, 
-        student_answer_text: str
-    ) -> AssessmentReport:
-        """Reads rubric, question paper, and student answer sheet to evaluate and return structured feedback."""
-        
         user_prompt = f"""
-Please evaluate the following student submission using the provided question paper and rubric.
+=== QUESTION PAPER ===
+{clean_input_text(question_paper)}
 
---- QUESTION PAPER ---
-{question_paper_text}
+=== RUBRIC ===
+{clean_input_text(rubric)}
 
---- RUBRIC ---
-{rubric_text}
+=== MASTER ANSWER KEY ===
+{clean_input_text(answer_key)}
 
---- STUDENT ANSWER SHEET ---
-{student_answer_text}
-        """
+=== STUDENT SUBMISSION ===
+{clean_input_text(student_work) if student_work.strip() else "NO STUDENT SUBMISSION PROVIDED. Grade all questions as 0."}
+"""
 
-        messages = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=user_prompt)
+        return self.client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            response_model=AssessmentReport,
+            max_retries=3,
+            max_tokens=8192,
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.0
+        )
+
+
+class AuditAgent:
+    """Agent 4: Verifies score arithmetic and feedback formatting."""
+    def __init__(self, instructor_client: instructor.Instructor):
+        self.client = instructor_client
+
+    def run(self, initial_report: AssessmentReport, rubric: str) -> AssessmentReport:
+        print("🤖 [Agent 4: Auditor] Auditing scores and feedback...")
+
+        system_instruction = (
+            "You are a Quality Audit Agent. Output ONLY valid JSON according to the schema.\n"
+            "STRICT FORMATTING RULES:\n"
+            "1. DO NOT output any preamble or commentary outside the JSON payload. Your output MUST start with '{'.\n"
+            "2. Ensure question scores match the sum of their criterion scores.\n"
+            "3. Keep feedback clear, direct, and free of invalid backslashes."
+        )
+
+        user_prompt = f"""
+=== ORIGINAL RUBRIC ===
+{clean_input_text(rubric)}
+
+=== INITIAL REPORT FOR REVIEW ===
+{initial_report.model_dump_json(indent=2)}
+"""
+
+        return self.client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            response_model=AssessmentReport,
+            max_retries=3,
+            max_tokens=8192,
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.0
+        )
+
+
+# =====================================================================
+# 3. PIPELINE ORCHESTRATOR
+# =====================================================================
+
+class MultiAgentAssessmentSystem:
+    def __init__(self, api_key: Optional[str] = None):
+        key = api_key or os.getenv("GROQ_API_KEY")
+        if not key:
+            raise ValueError("GROQ_API_KEY environment variable is missing.")
+
+        self.raw_client = Groq(api_key=key)
+        self.instructor_client = instructor.from_groq(self.raw_client, mode=instructor.Mode.JSON)
+
+        self.transcriber = TranscriberAgent(self.raw_client)
+        self.solver = AnswerKeyAgent(self.raw_client)
+        self.evaluator = EvaluatorAgent(self.instructor_client)
+        self.auditor = AuditAgent(self.instructor_client)
+
+        self.conversation_history: List[dict] = []
+
+    def process_submission(
+        self,
+        question_paper: str = "",
+        rubric: str = "",
+        student_text: str = "",
+        images: Optional[List[Image.Image]] = None,
+        # Keyword aliases to support legacy web callers
+        question_paper_text: Optional[str] = None,
+        rubric_text: Optional[str] = None,
+        student_answer_text: Optional[str] = None,
+        **kwargs: Any
+    ) -> AssessmentReport:
+        """Executes the multi-agent assessment pipeline with support for flexible param names."""
+        
+        # Unify keyword arguments
+        final_qp = question_paper_text if question_paper_text is not None else question_paper
+        final_rubric = rubric_text if rubric_text is not None else rubric
+        final_student = student_answer_text if student_answer_text is not None else student_text
+
+        # Step 1: Transcribe handwritten image pages (if provided)
+        transcribed_text = ""
+        if images:
+            transcribed_text = self.transcriber.run(images)
+
+        combined_student_work = final_student.strip()
+        if transcribed_text:
+            combined_student_work += f"\n\n=== TRANSCRIBED HANDWRITTEN PAGES ===\n{transcribed_text}"
+
+        # Step 2: Generate Answer Key
+        master_answer_key = self.solver.run(final_qp, final_rubric)
+
+        # Step 3: Initial Evaluation
+        initial_report = self.evaluator.run(
+            question_paper=final_qp,
+            rubric=final_rubric,
+            answer_key=master_answer_key,
+            student_work=combined_student_work
+        )
+
+        # Step 4: Audit and final JSON check
+        final_report = self.auditor.run(
+            initial_report=initial_report,
+            rubric=final_rubric
+        )
+
+        # Seed chat conversation history
+        self.conversation_history = [
+            {"role": "system", "content": "You are a helpful academic grading assistant."},
+            {"role": "user", "content": f"Evaluation context:\n{final_report.model_dump_json(indent=2)}"},
+            {"role": "assistant", "content": "I have evaluated the submission. How can I help you with the grades?"}
         ]
 
-        # 1. Run structured assessment using Groq
-        report: AssessmentReport = self.structured_evaluator.invoke(messages)
+        print("✨ Multi-Agent Evaluation Complete!")
+        return final_report
 
-        # 2. Save context into history for verification chat turns
-        self.chat_history = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=user_prompt),
-            AIMessage(content=f"Assessment complete. Overall summary: {report.overall_summary}")
-        ]
-
-        return report
+    # Direct method alias for web compatibility
+    evaluate_submission = process_submission
 
     def verify_and_chat(self, user_message: str) -> str:
-        """Interactive verification mode to ask questions, clarify reasoning, or adjust feedback."""
-        if not self.chat_history:
-            return "Please run `evaluate_submission()` first before initiating chat verification."
+        """Interactive follow-up conversation about grades."""
+        if not self.conversation_history:
+            self.conversation_history = [
+                {"role": "system", "content": "You are a helpful academic grading assistant."}
+            ]
 
-        self.chat_history.append(HumanMessage(content=user_message))
-        
-        # Generate conversational response incorporating history
-        response = self.llm.invoke(self.chat_history)
-        self.chat_history.append(response)
-        
-        return str(response.content)
+        self.conversation_history.append({"role": "user", "content": user_message})
+
+        try:
+            response = self.raw_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=self.conversation_history,
+                temperature=0.2,
+                max_tokens=2048
+            )
+
+            reply = response.choices[0].message.content or ""
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        except Exception as e:
+            raise RuntimeError(f"Groq Chat failed: {str(e)}")
 
 
-# ==========================================
-# 3. Execution Example
-# ==========================================
+# =====================================================================
+# 4. BACKWARD COMPATIBILITY CLASS FOR WEB.PY
+# =====================================================================
+
+class RubricAssessmentAgent(MultiAgentAssessmentSystem):
+    """Direct alias wrapper ensuring imports in legacy web.py work cleanly."""
+    pass
+
+
+# =====================================================================
+# 5. LOCAL TEST EXECUTION
+# =====================================================================
 
 if __name__ == "__main__":
-    # Ensure GROQ_API_KEY is exported in your environment:
-    # export GROQ_API_KEY="your-groq-api-key"
+    system = RubricAssessmentAgent()
 
-    agent = RubricAssessmentAgent()
+    qp = "Problem 1: Solve for x: 2x + 4 = 10."
+    rubric = "Problem 1: Max Score 5 pts (3 pts for subtracting 4, 2 pts for dividing by 2)."
+    student = "Problem 1: 2x = 6, x = 3."
 
-    # Define sample question paper, rubric, and student responses
-    sample_question_paper = """
-    Q1: Explain Supervised vs Unsupervised Learning.
-    Q2: Describe a real-world use case for Reinforcement Learning.
-    """
-
-    sample_rubric = """
-    Question 1 Rubric (Max 15 points):
-    - Defines supervised learning (5 pts)
-    - Defines unsupervised learning (5 pts)
-    - Provides concrete contrasting examples (5 pts)
-
-    Question 2 Rubric (Max 25 points):
-    - Identifies a valid real-world domain (10 pts)
-    - Explains why RL fits the domain (10 pts)
-    - Mentions reward/agent dynamics (5 pts)
-    """
-
-    sample_student_answers = """
-    Q1: Supervised learning uses labeled data to train models. Unsupervised learning finds patterns in unlabeled data.
-    Q2: Autonomous vehicles use RL to learn driving policies by receiving rewards for safe navigation and penalties for crashes.
-    """
-
-    print("--- 1. EVALUATING SUBMISSION WITH GROQ ---")
-    report = agent.evaluate_submission(
-        rubric_text=sample_rubric,
-        question_paper_text=sample_question_paper,
-        student_answer_text=sample_student_answers
+    report = system.evaluate_submission(
+        question_paper_text=qp,
+        rubric_text=rubric,
+        student_answer_text=student
     )
 
-    # Output dynamic scoring report
-    print(f"Overall Summary: {report.overall_summary}\n")
-    for eval_item in report.evaluations:
-        print(f"[{eval_item.question_id}] Score: {eval_item.score} / {eval_item.max_score}")
-        print(f"Feedback: {eval_item.feedback}")
-        for criterion in eval_item.criterion_scores:
-            print(f"  • {criterion.description}: {criterion.score}/{criterion.weight} — {criterion.feedback}")
-        print("-" * 50)
-
-    print("\n--- 2. INTERACTIVE CHAT VERIFICATION ---")
-    
-    # Verification query 1
-    query_1 = "Why did the student lose points on Question 1?"
-    print(f"\nUser: {query_1}")
-    print(f"Agent:\n{agent.verify_and_chat(query_1)}")
-
-    # Verification query 2
-    query_2 = "Can we award 2 points partial credit for implicit contrast in Q1?"
-    print(f"\nUser: {query_2}")
-    print(f"Agent:\n{agent.verify_and_chat(query_2)}")
+    print("\n--- TEST OUTPUT ---")
+    print(json.dumps(report.model_dump(), indent=2))

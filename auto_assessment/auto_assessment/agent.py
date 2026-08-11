@@ -3,6 +3,7 @@ import json
 import base64
 import io
 import re
+import time
 from typing import List, Optional, Any
 from pydantic import BaseModel, Field
 from groq import Groq, RateLimitError, APIStatusError
@@ -76,7 +77,7 @@ def clean_input_text(text: str) -> str:
     """
     Sanitizes prompt input:
     1. Escapes single backslashes so downstream JSON parsing doesn't choke on
-       raw LaTeX-style sequences (e.g. \alpha -> \\alpha).
+       raw LaTeX-style sequences (e.g. \\alpha -> \\\\alpha).
     2. Collapses excessive repeated identical lines to break LLM hallucination loops.
     """
     if not text:
@@ -112,6 +113,44 @@ def summarize_report(report: "AssessmentReport") -> str:
     return "\n".join(lines)
 
 
+def validate_score_arithmetic(report: "AssessmentReport", tolerance: float = 0.01) -> List[str]:
+    """
+    Code-level check (not just a prompt instruction) that each question's
+    score matches the sum of its own criterion scores. Returns a list of
+    warning strings for any question that fails the check; does not mutate
+    the report -- caller decides whether to auto-correct, log, or re-audit.
+    """
+    warnings: List[str] = []
+    for ev in report.evaluations:
+        if not ev.criterion_scores:
+            continue
+        criterion_sum = sum(c.score for c in ev.criterion_scores)
+        if abs(criterion_sum - ev.score) > tolerance:
+            warnings.append(
+                f"{ev.question_id}: reported score {ev.score} does not match "
+                f"sum of criterion scores {criterion_sum}"
+            )
+    return warnings
+
+
+def _call_with_retries(fn, *, retries: int = 3, backoff_seconds: float = 1.5, label: str = "call"):
+    """
+    Small shared retry wrapper for the two plain (non-instructor) Groq calls
+    -- TranscriberAgent and AnswerKeyAgent -- which previously had zero retry
+    protection unlike the instructor-backed Evaluator/Auditor/Regrade calls.
+    """
+    last_err: Optional[Exception] = None
+    for attempt in range(1, retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            print(f"[{label}] Attempt {attempt}/{retries} failed: {type(e).__name__}: {e}")
+            if attempt < retries:
+                time.sleep(backoff_seconds * attempt)
+    raise last_err
+
+
 # =====================================================================
 # 2. AGENT DEFINITIONS
 # =====================================================================
@@ -143,18 +182,21 @@ class TranscriberAgent:
                 "image_url": {"url": f"data:image/jpeg;base64,{pil_to_base64(img)}"},
             })
 
-        try:
+        def _do_call():
             response = self.client.chat.completions.create(
                 model="qwen/qwen3.6-27b",
                 messages=[{"role": "user", "content": user_content}],
                 temperature=0.0,
                 max_tokens=2048,
             )
-            text = response.choices[0].message.content or ""
+            return response.choices[0].message.content or ""
+
+        try:
+            text = _call_with_retries(_do_call, label="Agent 1: Transcriber")
             print(f"[Agent 1: Transcriber] Got {len(text)} chars back. Preview: {text[:200]!r}")
             return text
         except Exception as e:
-            print(f"[Agent 1: Transcriber] FAILED: {type(e).__name__}: {e}")
+            print(f"[Agent 1: Transcriber] FAILED after retries: {type(e).__name__}: {e}")
             return ""
 
 
@@ -176,7 +218,7 @@ class AnswerKeyAgent:
         )
         user_prompt = f"=== QUESTION PAPER ===\n{question_paper}\n\n=== RUBRIC ===\n{rubric}"
 
-        try:
+        def _do_call():
             response = self.client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
@@ -186,11 +228,14 @@ class AnswerKeyAgent:
                 temperature=0.1,
                 max_tokens=2048,
             )
-            text = response.choices[0].message.content or ""
+            return response.choices[0].message.content or ""
+
+        try:
+            text = _call_with_retries(_do_call, label="Agent 2: Solver")
             print(f"[Agent 2: Solver] Answer key preview: {text[:200]!r}")
             return text
         except Exception as e:
-            print(f"[Agent 2: Solver] FAILED: {type(e).__name__}: {e}")
+            print(f"[Agent 2: Solver] FAILED after retries: {type(e).__name__}: {e}")
             raise
 
 
@@ -213,7 +258,13 @@ class EvaluatorAgent:
             "1. DO NOT output any introductory text, preambles, or conversational statements before or after the JSON payload. Start immediately with '{'.\n"
             "2. Keep feedback concise and direct to stay within token limits.\n"
             "3. Do NOT quote full question texts inside feedback fields.\n"
-            "4. NEVER use single raw backslashes (use plain text like 'alpha' or double backslashes '\\alpha')."
+            "4. NEVER use single raw backslashes (use plain text like 'alpha' or double backslashes '\\\\alpha').\n"
+            "ACTIONABILITY REQUIREMENT (this is graded on, not optional):\n"
+            "5. For every criterion, feedback must state (a) what the student actually wrote or did, "
+            "(b) what was expected per the rubric/answer key, and (c) the specific, concrete correction "
+            "needed to earn full credit next time. Do NOT write feedback that only states a score was "
+            "lost without saying exactly why and exactly what to fix (e.g. 'missing justification' alone "
+            "is not acceptable -- say what justification was missing and what it should have contained)."
         )
         user_prompt = f"""
 === QUESTION PAPER ===
@@ -264,7 +315,11 @@ class AuditAgent:
             "STRICT FORMATTING RULES:\n"
             "1. DO NOT output any preamble or commentary outside the JSON payload. Your output MUST start with '{'.\n"
             "2. Ensure question scores match the sum of their criterion scores.\n"
-            "3. Keep feedback clear, direct, and free of invalid backslashes."
+            "3. Keep feedback clear, direct, and free of invalid backslashes.\n"
+            "ACTIONABILITY REQUIREMENT (this is graded on, not optional):\n"
+            "4. Reject/rewrite any feedback that identifies an error without stating the specific fix -- "
+            "vague feedback like 'incomplete' or 'missing justification' must be replaced with the exact "
+            "missing element and what the student should have written instead."
         )
         user_prompt = f"""
 === ORIGINAL RUBRIC ===
@@ -287,6 +342,11 @@ class AuditAgent:
                 temperature=0.0,
             )
             print(f"[Agent 4: Auditor] Final report has {len(report.evaluations)} question evaluation(s).")
+
+            arithmetic_warnings = validate_score_arithmetic(report)
+            for w in arithmetic_warnings:
+                print(f"[Agent 4: Auditor] ARITHMETIC WARNING: {w}")
+
             return report
         except Exception as e:
             print(f"[Agent 4: Auditor] FAILED: {type(e).__name__}: {e}")
@@ -314,8 +374,8 @@ class MultiAgentAssessmentSystem:
         self.conversation_history: List[dict] = []
         # Stores question paper / rubric / answer key / student work / report
         # from the most recent process_submission() call -- required so a
-        # regrade request can be checked against the SAME evidence as the
-        # original grade.
+        # regrade request (and now full evaluator chat) can be checked
+        # against the SAME evidence as the original grade.
         self.last_context: Optional[dict] = None
 
     def process_submission(
@@ -329,10 +389,20 @@ class MultiAgentAssessmentSystem:
         question_paper_text: Optional[str] = None,
         rubric_text: Optional[str] = None,
         student_answer_text: Optional[str] = None,
+        model_answer_text: Optional[str] = None,
         custom_instructions: str = "",
         **kwargs: Any,
     ) -> AssessmentReport:
-        """Executes the multi-agent assessment pipeline with support for flexible param names."""
+        """
+        Executes the multi-agent assessment pipeline with support for flexible
+        param names.
+
+        model_answer_text (optional): if a human-provided model answer is
+        supplied, it is used directly by the Evaluator instead of the
+        Solver-generated answer key. This closes the gap against a spec that
+        expects a "model answer per question" as an input rather than always
+        having the system invent its own ground truth.
+        """
 
         final_qp = question_paper_text if question_paper_text is not None else question_paper
         final_rubric = rubric_text if rubric_text is not None else rubric
@@ -357,7 +427,11 @@ class MultiAgentAssessmentSystem:
         if custom_instructions:
             final_rubric = f"{final_rubric}\n\n=== ADDITIONAL GRADER INSTRUCTIONS ===\n{custom_instructions}"
 
-        master_answer_key = self.solver.run(final_qp, final_rubric)
+        if model_answer_text and model_answer_text.strip():
+            print("[Pipeline] Using PROVIDED model answer instead of generating one.")
+            master_answer_key = model_answer_text.strip()
+        else:
+            master_answer_key = self.solver.run(final_qp, final_rubric)
 
         initial_report = self.evaluator.run(
             question_paper=final_qp,
@@ -371,7 +445,8 @@ class MultiAgentAssessmentSystem:
             rubric=final_rubric,
         )
 
-        # Store full context for later regrade requests.
+        # Store full context for later regrade requests AND for full-context
+        # evaluator chat (see verify_and_chat below).
         self.last_context = {
             "question_paper": final_qp,
             "rubric": final_rubric,
@@ -380,13 +455,9 @@ class MultiAgentAssessmentSystem:
             "report": final_report,
         }
 
-        # Seed chat with a COMPACT summary, not the full indented JSON dump --
-        # that was the main driver of burning through the Groq daily token quota.
-        self.conversation_history = [
-            {"role": "system", "content": "You are a helpful academic grading assistant."},
-            {"role": "user", "content": f"Evaluation context:\n{summarize_report(final_report)}"},
-            {"role": "assistant", "content": "I have evaluated the submission. How can I help you with the grades?"},
-        ]
+        # Reset chat history so the next verify_and_chat() call rebuilds the
+        # system message from the fresh last_context (see verify_and_chat).
+        self.conversation_history = []
 
         print("Multi-Agent Evaluation Complete!")
         return final_report
@@ -513,21 +584,61 @@ class MultiAgentAssessmentSystem:
                 report.evaluations[idx] = result.question
                 break
 
+        # Force the next verify_and_chat() call to rebuild its system message
+        # from the updated last_context, so chat reflects the corrected score.
+        self.conversation_history = []
+
         print(f"[Regrade] {question_id}: {original.score} -> {result.question.score} "
               f"(claim_verified={result.claim_verified}, changed={result.changed})")
 
         return result
 
+    def _build_evaluator_chat_system_message(self) -> str:
+        """
+        Builds the system message that lets chat reason like the actual
+        Evaluator -- with the real rubric, master answer key, full student
+        submission, and graded report, instead of only a one-line-per-question
+        summary. This is what makes "chat with the agent that evaluated your
+        response" literally true rather than a lookup over compressed text.
+        """
+        ctx = self.last_context
+        report: AssessmentReport = ctx["report"]
+        return (
+            "You are the SAME evaluator that graded this submission. You have full "
+            "access to the rubric, the master answer key, and the student's actual "
+            "submission below -- use them directly when answering. When explaining "
+            "a score, cite the specific rubric criterion or answer-key step involved "
+            "rather than speaking in generalities. If asked why points were lost on "
+            "a specific question, quote the relevant part of the student's submission "
+            "and explain exactly what the rubric required instead.\n\n"
+            f"=== RUBRIC ===\n{ctx['rubric']}\n\n"
+            f"=== MASTER ANSWER KEY ===\n{ctx['answer_key']}\n\n"
+            f"=== STUDENT SUBMISSION ===\n{ctx['student_work']}\n\n"
+            f"=== GRADED REPORT (summary) ===\n{summarize_report(report)}"
+        )
+
     def verify_and_chat(self, user_message: str) -> str:
-        """Interactive follow-up conversation about grades."""
+        """
+        Interactive follow-up conversation about grades -- now backed by the
+        FULL grading context (rubric, answer key, student submission, report)
+        instead of only a compact summary, so the chat agent can actually
+        reason like the evaluator that produced the grade rather than just
+        parroting a one-line-per-question digest.
+        """
+        if not self.last_context:
+            raise RuntimeError("No completed assessment to chat about. Run an assessment first.")
+
         if not self.conversation_history:
-            print("[Chat] WARNING: conversation_history is empty -- assessment probably never completed successfully.")
             self.conversation_history = [
-                {"role": "system", "content": "You are a helpful academic grading assistant."}
+                {"role": "system", "content": self._build_evaluator_chat_system_message()},
+                {"role": "assistant", "content": "I have evaluated the submission. How can I help you with the grades?"},
             ]
 
         self.conversation_history.append({"role": "user", "content": user_message})
 
+        # NOTE: MAX_TURNS only trims non-system turns -- the system message
+        # (which carries the full grading context) is always preserved so
+        # the evaluator's context never degrades mid-conversation.
         MAX_TURNS = 8
         system_msgs = [m for m in self.conversation_history if m["role"] == "system"]
         other_msgs = [m for m in self.conversation_history if m["role"] != "system"]
@@ -590,3 +701,7 @@ if __name__ == "__main__":
 
     print("\n--- TEST OUTPUT ---")
     print(json.dumps(report.model_dump(), indent=2))
+
+    print("\n--- CHAT TEST ---")
+    reply = system.verify_and_chat("Why did I lose points on Problem 1?")
+    print(reply)

@@ -5,7 +5,11 @@ This repository contains a rubric-based assessment engine that grades student an
 ## What is included
 
 - `auto_assessment/`: Rubric grading package with CLI and uvicorn API
-- `examples/sample_payload.json`: Example payload for rubric grading
+
+## Frontend
+![alt text](<Screenshot 2026-08-11 at 9.37.46 AM.png>) 
+![alt text](<Screenshot 2026-08-11 at 9.37.58 AM.png>) 
+![alt text](<Screenshot 2026-08-11 at 9.38.07 AM.png>)
 
 ## Installation
 

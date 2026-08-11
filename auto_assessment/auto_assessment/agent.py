@@ -9,7 +9,6 @@ from groq import Groq
 from PIL import Image
 import instructor
 
-
 # =====================================================================
 # 1. PYDANTIC SCHEMAS (DATA CONTRACTS)
 # =====================================================================
@@ -48,105 +47,127 @@ def pil_to_base64(img: Image.Image) -> str:
 def clean_input_text(text: str) -> str:
     """
     Sanitizes prompt input:
-    1. Replaces single backslashes in LaTeX with double backslashes.
-    2. Removes excessive repeated identical lines to break LLM hallucination loops.
+    1. Escapes single backslashes so downstream JSON parsing doesn't choke on
+       raw LaTeX-style sequences (e.g. \\alpha -> \\\\alpha).
+    2. Collapses excessive repeated identical lines to break LLM hallucination loops.
     """
     if not text:
         return ""
 
-    # Double-escape backslashes for valid JSON string parsing
+    # Escape single backslashes that aren't already doubled (valid for JSON string values).
     sanitized = re.sub(r'(?<!\\)\\(?!\\)', r'\\\\', text)
 
-    # Deduplicate consecutive identical lines (prevents infinite repetition loops)
-    lines = sanitized.splitlines()
-    deduped_lines = []
-    prev_line = None
+    # Collapse 3+ consecutive identical lines down to a single occurrence.
+    lines = sanitized.split("\n")
+    deduped: List[str] = []
     repeat_count = 0
-
     for line in lines:
-        stripped = line.strip()
-        if stripped == prev_line and stripped != "":
+        if deduped and line == deduped[-1]:
             repeat_count += 1
-            if repeat_count < 3:  # Allow up to 2 identical consecutive lines
-                deduped_lines.append(line)
+            if repeat_count >= 2:
+                continue
         else:
-            prev_line = stripped
             repeat_count = 0
-            deduped_lines.append(line)
+        deduped.append(line)
 
-    return "\n".join(deduped_lines)
+    return "\n".join(deduped)
 
 
 # =====================================================================
-# 2. SPECIALIZED LLM AGENTS
+# 2. AGENT DEFINITIONS
 # =====================================================================
 
 class TranscriberAgent:
-    """Agent 1: Converts handwritten sheets into clean text."""
+    """Agent 1: Transcribes handwritten/scanned images into clean text."""
+
     def __init__(self, raw_client: Groq):
         self.client = raw_client
 
-    def run(self, images: List[Image.Image]) -> str:
+    def run(self, images: Optional[List[Image.Image]]) -> str:
         if not images:
+            print("🤖 [Agent 1: Transcriber] No images provided, skipping.")
             return ""
 
-        print("🤖 [Agent 1: Transcriber] Transcribing handwritten images...")
-        user_content = [
+        print(f"🤖 [Agent 1: Transcriber] Transcribing {len(images)} image(s)...")
+        user_content: List[dict] = [
             {
-                "type": "text", 
-                "text": "Transcribe all handwritten equations, math proofs, and text verbatim into clean Markdown. Do not repeat text or loop infinitely."
+                "type": "text",
+                "text": (
+                    "Transcribe all handwritten equations, math proofs, and text verbatim "
+                    "into clean Markdown. Do not repeat text or loop infinitely."
+                ),
             }
         ]
-        
         for img in images[:5]:
             user_content.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{pil_to_base64(img)}"}
+                "image_url": {"url": f"data:image/jpeg;base64,{pil_to_base64(img)}"},
             })
 
-        # Updated to active Groq Vision model
-        response = self.client.chat.completions.create(
-            model="qwen/qwen3.6-27b",
-            messages=[{"role": "user", "content": user_content}],
-            temperature=0.0,
-            max_tokens=2048
-        )
-        return response.choices[0].message.content or ""
+        try:
+            response = self.client.chat.completions.create(
+                model="qwen/qwen3.6-27b",
+                messages=[{"role": "user", "content": user_content}],
+                temperature=0.0,
+                max_tokens=2048,
+            )
+            text = response.choices[0].message.content or ""
+            print(f"✅ [Agent 1: Transcriber] Got {len(text)} chars back. Preview: {text[:200]!r}")
+            return text
+        except Exception as e:
+            print(f"❌ [Agent 1: Transcriber] FAILED: {type(e).__name__}: {e}")
+            return ""
 
 
 class AnswerKeyAgent:
     """Agent 2: Generates a step-by-step master reference solution."""
+
     def __init__(self, raw_client: Groq):
         self.client = raw_client
 
     def run(self, question_paper: str, rubric: str) -> str:
-        print("🤖 [Agent 2: Solver] Generating master answer key...")
+        print(f"🤖 [Agent 2: Solver] Generating master answer key... "
+              f"(QP chars={len(question_paper)}, Rubric chars={len(rubric)})")
+        if not question_paper.strip():
+            print("⚠️ [Agent 2: Solver] question_paper is EMPTY — answer key will be low quality.")
+
         system_prompt = (
             "You are a master educator. Solve the question paper step-by-step. "
             "Keep math clear, concise, and accurate."
         )
         user_prompt = f"=== QUESTION PAPER ===\n{question_paper}\n\n=== RUBRIC ===\n{rubric}"
 
-        response = self.client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.1,
-            max_tokens=2048
-        )
-        return response.choices[0].message.content or ""
+        try:
+            response = self.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.1,
+                max_tokens=2048,
+            )
+            text = response.choices[0].message.content or ""
+            print(f"✅ [Agent 2: Solver] Answer key preview: {text[:200]!r}")
+            return text
+        except Exception as e:
+            print(f"❌ [Agent 2: Solver] FAILED: {type(e).__name__}: {e}")
+            raise
 
 
 class EvaluatorAgent:
     """Agent 3: Compares student work against the answer key and rubric."""
+
     def __init__(self, instructor_client: instructor.Instructor):
         self.client = instructor_client
 
     def run(self, question_paper: str, rubric: str, answer_key: str, student_work: str) -> AssessmentReport:
-        print("🤖 [Agent 3: Evaluator] Grading student submission...")
-        
+        print(f"🤖 [Agent 3: Evaluator] Grading student submission... "
+              f"(QP={len(question_paper)} chars, Rubric={len(rubric)} chars, "
+              f"AnswerKey={len(answer_key)} chars, StudentWork={len(student_work)} chars)")
+        if not student_work.strip():
+            print("⚠️ [Agent 3: Evaluator] student_work is EMPTY — every question will be graded 0.")
+
         system_instruction = (
             "You are an academic evaluator. Output ONLY valid JSON according to the schema.\n"
             "STRICT FORMATTING RULES:\n"
@@ -155,7 +176,6 @@ class EvaluatorAgent:
             "3. Do NOT quote full question texts inside feedback fields.\n"
             "4. NEVER use single raw backslashes (use plain text like 'alpha' or double backslashes '\\\\alpha')."
         )
-
         user_prompt = f"""
 === QUESTION PAPER ===
 {clean_input_text(question_paper)}
@@ -170,21 +190,30 @@ class EvaluatorAgent:
 {clean_input_text(student_work) if student_work.strip() else "NO STUDENT SUBMISSION PROVIDED. Grade all questions as 0."}
 """
 
-        return self.client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            response_model=AssessmentReport,
-            max_retries=3,
-            max_tokens=8192,
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.0
-        )
+        try:
+            report = self.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                response_model=AssessmentReport,
+                max_retries=3,
+                max_tokens=8192,
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+            )
+            print(f"✅ [Agent 3: Evaluator] Parsed {len(report.evaluations)} question evaluation(s).")
+            for ev in report.evaluations:
+                print(f"    - {ev.question_id}: {ev.score}/{ev.max_score} | feedback preview: {ev.feedback[:80]!r}")
+            return report
+        except Exception as e:
+            print(f"❌ [Agent 3: Evaluator] FAILED after retries: {type(e).__name__}: {e}")
+            raise
 
 
 class AuditAgent:
     """Agent 4: Verifies score arithmetic and feedback formatting."""
+
     def __init__(self, instructor_client: instructor.Instructor):
         self.client = instructor_client
 
@@ -198,7 +227,6 @@ class AuditAgent:
             "2. Ensure question scores match the sum of their criterion scores.\n"
             "3. Keep feedback clear, direct, and free of invalid backslashes."
         )
-
         user_prompt = f"""
 === ORIGINAL RUBRIC ===
 {clean_input_text(rubric)}
@@ -207,17 +235,23 @@ class AuditAgent:
 {initial_report.model_dump_json(indent=2)}
 """
 
-        return self.client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            response_model=AssessmentReport,
-            max_retries=3,
-            max_tokens=8192,
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.0
-        )
+        try:
+            report = self.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                response_model=AssessmentReport,
+                max_retries=3,
+                max_tokens=8192,
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+            )
+            print(f"✅ [Agent 4: Auditor] Final report has {len(report.evaluations)} question evaluation(s).")
+            return report
+        except Exception as e:
+            print(f"❌ [Agent 4: Auditor] FAILED: {type(e).__name__}: {e}")
+            raise
 
 
 # =====================================================================
@@ -246,27 +280,43 @@ class MultiAgentAssessmentSystem:
         rubric: str = "",
         student_text: str = "",
         images: Optional[List[Image.Image]] = None,
+        qp_images: Optional[List[Image.Image]] = None,
+        student_images: Optional[List[Image.Image]] = None,
         # Keyword aliases to support legacy web callers
         question_paper_text: Optional[str] = None,
         rubric_text: Optional[str] = None,
         student_answer_text: Optional[str] = None,
-        **kwargs: Any
+        custom_instructions: str = "",
+        **kwargs: Any,
     ) -> AssessmentReport:
         """Executes the multi-agent assessment pipeline with support for flexible param names."""
-        
+
         # Unify keyword arguments
         final_qp = question_paper_text if question_paper_text is not None else question_paper
         final_rubric = rubric_text if rubric_text is not None else rubric
         final_student = student_answer_text if student_answer_text is not None else student_text
 
-        # Step 1: Transcribe handwritten image pages (if provided)
+        # Merge legacy `images` (treated as student images) with explicit student_images.
+        all_student_images = list(student_images or []) + list(images or [])
+        all_qp_images = list(qp_images or [])
+
+        # Step 1a: Transcribe handwritten/scanned question-paper pages, if any.
+        if all_qp_images:
+            qp_transcribed = self.transcriber.run(all_qp_images)
+            if qp_transcribed:
+                final_qp = f"{final_qp}\n\n=== TRANSCRIBED QUESTION PAPER PAGES ===\n{qp_transcribed}".strip()
+
+        # Step 1b: Transcribe handwritten/scanned student submission pages.
         transcribed_text = ""
-        if images:
-            transcribed_text = self.transcriber.run(images)
+        if all_student_images:
+            transcribed_text = self.transcriber.run(all_student_images)
 
         combined_student_work = final_student.strip()
         if transcribed_text:
             combined_student_work += f"\n\n=== TRANSCRIBED HANDWRITTEN PAGES ===\n{transcribed_text}"
+
+        if custom_instructions:
+            final_rubric = f"{final_rubric}\n\n=== ADDITIONAL GRADER INSTRUCTIONS ===\n{custom_instructions}"
 
         # Step 2: Generate Answer Key
         master_answer_key = self.solver.run(final_qp, final_rubric)
@@ -276,20 +326,20 @@ class MultiAgentAssessmentSystem:
             question_paper=final_qp,
             rubric=final_rubric,
             answer_key=master_answer_key,
-            student_work=combined_student_work
+            student_work=combined_student_work,
         )
 
         # Step 4: Audit and final JSON check
         final_report = self.auditor.run(
             initial_report=initial_report,
-            rubric=final_rubric
+            rubric=final_rubric,
         )
 
         # Seed chat conversation history
         self.conversation_history = [
             {"role": "system", "content": "You are a helpful academic grading assistant."},
             {"role": "user", "content": f"Evaluation context:\n{final_report.model_dump_json(indent=2)}"},
-            {"role": "assistant", "content": "I have evaluated the submission. How can I help you with the grades?"}
+            {"role": "assistant", "content": "I have evaluated the submission. How can I help you with the grades?"},
         ]
 
         print("✨ Multi-Agent Evaluation Complete!")
@@ -301,25 +351,27 @@ class MultiAgentAssessmentSystem:
     def verify_and_chat(self, user_message: str) -> str:
         """Interactive follow-up conversation about grades."""
         if not self.conversation_history:
+            print("⚠️ [Chat] conversation_history is empty — assessment probably never completed successfully.")
             self.conversation_history = [
                 {"role": "system", "content": "You are a helpful academic grading assistant."}
             ]
 
         self.conversation_history.append({"role": "user", "content": user_message})
+        print(f"🤖 [Chat] Sending message, history length={len(self.conversation_history)}")
 
         try:
             response = self.raw_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=self.conversation_history,
                 temperature=0.2,
-                max_tokens=2048
+                max_tokens=2048,
             )
-
             reply = response.choices[0].message.content or ""
+            print(f"✅ [Chat] Reply preview: {reply[:150]!r}")
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
-
         except Exception as e:
+            print(f"❌ [Chat] FAILED: {type(e).__name__}: {e}")
             raise RuntimeError(f"Groq Chat failed: {str(e)}")
 
 
@@ -346,7 +398,7 @@ if __name__ == "__main__":
     report = system.evaluate_submission(
         question_paper_text=qp,
         rubric_text=rubric,
-        student_answer_text=student
+        student_answer_text=student,
     )
 
     print("\n--- TEST OUTPUT ---")

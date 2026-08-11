@@ -42,9 +42,9 @@ The web UI is a single-page app with three views reachable from a persistent sid
 - **Score Feed** — summary stats (average score, total points, questions graded, full-marks count) followed by a per-question breakdown with rubric criteria, or a raw JSON view for debugging/export
 - **Agent Chat** — ask follow-up questions about the grading (e.g. "Why did Q1 lose points?") or request adjustments
 
-![Upload view](<Screenshot 2026-08-11 at 9.37.46 AM.png>)
-![Score Feed view](<Screenshot 2026-08-11 at 9.37.58 AM.png>)
-![Agent Chat view](<Screenshot 2026-08-11 at 9.38.07 AM.png>)
+![Upload view](<Screenshot 2026-08-11 at 9.37.46 AM.png>) 
+![Score Feed view](<Screenshot 2026-08-11 at 9.37.58 AM.png>)
+![Agent Chat view](<Screenshot 2026-08-11 at 9.38.07 AM.png>)
 
 ## Installation
 
@@ -117,10 +117,7 @@ curl -X POST "http://127.0.0.1:8000/api/chat" \
 - The vision transcription model used for handwritten pages should be verified against your Groq account's available model list — an invalid model ID fails silently (returns empty transcription) rather than raising a visible error, to avoid one bad image derailing the whole grading run.
 - Rubric-defensibility is currently checked by a single audit pass (Agent 4). There is no external human-in-the-loop verification step by design.
 
-## Frontend
-![alt text](<Screenshot 2026-08-11 at 9.37.46 AM.png>) 
-![alt text](<Screenshot 2026-08-11 at 9.37.58 AM.png>)
-![alt text](<Screenshot 2026-08-11 at 9.38.07 AM.png>)
+
 
 ## Roadmap
 

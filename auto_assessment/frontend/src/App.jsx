@@ -3,13 +3,19 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./styles.css";
 
+
 const NAV_ITEMS = [
   { id: "upload", label: "Upload", icon: "upload" },
   { id: "results", label: "Score Feed", icon: "score" },
   { id: "chat", label: "Agent Chat", icon: "chat" },
 ];
 
-function Icon({ name }) {
+
+// Single source of truth for every glyph in the app. Nothing renders a raw
+// emoji character anymore -- everything goes through this SVG set so icon
+// weight/stroke/size stay consistent across upload cards, empty states,
+// rubric rows and score badges.
+function Icon({ name, className }) {
   const paths = {
     upload: (
       <>
@@ -42,36 +48,104 @@ function Icon({ name }) {
         <path d="M13 9l2 3-2 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
       </>
     ),
+    // Replaces the 📄 emoji on the rubric dropzone.
+    document: (
+      <>
+        <path d="M7 3h7l3 3v15H7z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+        <path d="M14 3v4h4" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+        <path d="M9 12h6M9 15.5h6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </>
+    ),
+    // Replaces the 📝 emoji on the answer-sheet dropzone.
+    note: (
+      <>
+        <path d="M6 3h9l3 3v15H6z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+        <path d="M15 3v4h4" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+        <path d="M9 13l2.2 2.2L15 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    // Replaces the 📊 emoji in the results empty state.
+    chartEmpty: (
+      <>
+        <path d="M4 20V9M11 20V4M18 20v-7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+        <path d="M2 20h20" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </>
+    ),
+    // Replaces the "✕" close glyph used for file-chip removal.
+    close: (
+      <>
+        <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </>
+    ),
+    // Replaces the "✓" / "~" / "✕" rubric-status characters.
+    check: (
+      <>
+        <path d="M5 12.5l4.5 4.5L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    partial: (
+      <>
+        <path d="M4 12c2-3 4-3 6 0s4 3 6 0 4-3 4-3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    cross: (
+      <>
+        <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
   };
   return (
-    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
       {paths[name]}
     </svg>
   );
 }
+
 
 // Cleans up ugly backend/Groq error strings into something a user can
 // actually read, regardless of the exact wording that came through.
 function parseErrorMessage(status, rawDetail) {
   const text = String(rawDetail || "").trim();
 
+
   if (status === 429 || /rate.?limit/i.test(text)) {
     return "The grading model has hit its usage limit for now. Please wait a few minutes and try again.";
   }
+
 
   const messageMatch = text.match(/'message':\s*'([^']+)'/);
   if (messageMatch) {
     return messageMatch[1];
   }
 
+
   if (text.startsWith("{") || text.startsWith("[")) {
     return "Something went wrong while processing your request. Please try again.";
   }
 
+
   return text || "An unexpected error occurred.";
 }
 
+
+// Single, shared scale for "how good is this score" so badges, rubric
+// rows and stat cards all agree on what counts as good/ok/bad instead of
+// a color being hardcoded to green everywhere.
+//   >= 80%  -> "high"  (green)
+//   >= 50%  -> "mid"   (amber)
+//   otherwise -> "low" (red)
+function getScoreTier(score, max) {
+  const safeMax = max || 0;
+  if (safeMax <= 0) return "mid";
+  const pct = (score || 0) / safeMax;
+  if (pct >= 0.8) return "high";
+  if (pct >= 0.5) return "mid";
+  return "low";
+}
+
+
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
+
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -94,16 +168,19 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const chatWindowRef = useRef(null);
 
+
   const [regradeOpenFor, setRegradeOpenFor] = useState(null);
   const [dispute, setDispute] = useState(emptyDispute);
   const [regradeLoading, setRegradeLoading] = useState(null);
   const [regradeNotes, setRegradeNotes] = useState({});
+
 
   useEffect(() => {
     if (chatWindowRef.current) {
       chatWindowRef.current.scrollTop = chatWindowRef.current.scrollHeight;
     }
   }, [chatMessages]);
+
 
   const saveFile = (filename, content, type) => {
     const blob = new Blob([content], { type });
@@ -117,6 +194,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+
   const handleCopy = () => {
     const content = JSON.stringify(response, null, 2);
     navigator.clipboard.writeText(content).then(() => {
@@ -124,6 +202,7 @@ export default function App() {
       setTimeout(() => setCopyStatus("Copy JSON"), 1200);
     });
   };
+
 
   // Appends newly picked answer-sheet files to the existing list instead of
   // replacing it, and de-dupes by name+size so re-selecting the same file
@@ -144,9 +223,11 @@ export default function App() {
     });
   };
 
+
   const removeAnswerFile = (index) => {
     setAnswerFiles((prev) => prev.filter((_, i) => i !== index));
   };
+
 
   const handleAssess = async () => {
     if (!rubricFile && answerFiles.length === 0) {
@@ -156,11 +237,14 @@ export default function App() {
     setErrorMsg("");
     setLoading(true);
 
+
     const useBatch = answerFiles.length > 1;
+
 
     const formData = new FormData();
     if (rubricFile) formData.append("rubric_file", rubricFile);
     if (additionalInstructions.trim()) formData.append("instructions", additionalInstructions.trim());
+
 
     if (useBatch) {
       answerFiles.forEach((f) => formData.append("answer_files", f));
@@ -169,11 +253,13 @@ export default function App() {
       formData.append("answer_file", answerFiles[0]);
     }
 
+
     try {
       const res = await fetch(useBatch ? "/api/assess/batch" : "/api/assess", {
         method: "POST",
         body: formData,
       });
+
 
       if (!res.ok) {
         let rawDetail = "";
@@ -186,6 +272,7 @@ export default function App() {
         setErrorMsg(parseErrorMessage(res.status, rawDetail));
         return;
       }
+
 
       const data = await res.json();
       setResponse(data);
@@ -206,9 +293,11 @@ export default function App() {
     }
   };
 
+
   const handleSendChat = async (e) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
+
 
     const userMsg = { role: "user", content: chatInput.trim() };
     const updatedMessages = [...chatMessages, userMsg];
@@ -216,12 +305,14 @@ export default function App() {
     setChatInput("");
     setChatLoading(true);
 
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: updatedMessages, hasAssessment: !!response }),
       });
+
 
       if (!res.ok) {
         let rawDetail = "";
@@ -238,6 +329,7 @@ export default function App() {
         return;
       }
 
+
       const data = await res.json();
       setChatMessages([
         ...updatedMessages,
@@ -253,6 +345,7 @@ export default function App() {
     }
   };
 
+
   // Calls the regrade endpoint with a STRUCTURED dispute (specific claimed
   // mistake, optional criterion + evidence quote) instead of a vague reason,
   // so the backend is checking a falsifiable claim, not just "please regrade".
@@ -261,6 +354,7 @@ export default function App() {
   const handleRequestRegrade = async (questionId) => {
     if (!dispute.claimed_mistake.trim() || dispute.claimed_mistake.trim().length < 8) return;
     setRegradeLoading(questionId);
+
 
     try {
       const res = await fetch("/api/regrade", {
@@ -276,6 +370,7 @@ export default function App() {
       });
       const data = await res.json();
 
+
       if (!res.ok) {
         setRegradeNotes((prev) => ({
           ...prev,
@@ -283,6 +378,7 @@ export default function App() {
         }));
         return;
       }
+
 
       // Replace just this student's report (batch mode) or the whole
       // response (single mode) with the backend's updated version.
@@ -294,6 +390,7 @@ export default function App() {
       } else {
         setResponse(data.report);
       }
+
 
       setRegradeNotes((prev) => ({
         ...prev,
@@ -315,17 +412,25 @@ export default function App() {
     }
   };
 
+
+  // Rubric-row status icon now shares the same tier logic as the score
+  // badges, so "pass/partial/fail" always lines up with high/mid/low colors
+  // instead of a fixed ✓/~/✕ glyph set painted the same color regardless
+  // of how close the score actually is to full marks.
   const renderStatusIcon = (score, weight) => {
-    if (score >= weight) return <span className="rubric-icon pass">✓</span>;
-    if (score >= weight * 0.5) return <span className="rubric-icon partial">~</span>;
-    return <span className="rubric-icon fail">✕</span>;
+    const tier = getScoreTier(score, weight);
+    if (tier === "high") return <span className="rubric-icon tier-high"><Icon name="check" /></span>;
+    if (tier === "mid") return <span className="rubric-icon tier-mid"><Icon name="partial" /></span>;
+    return <span className="rubric-icon tier-low"><Icon name="cross" /></span>;
   };
+
 
   // In batch mode, pull the currently selected student's report out of
   // response.results; otherwise use the single-student response as before.
   const activeReport = isBatch
     ? response?.results?.[selectedStudentId]
     : response;
+
 
   const resultData = activeReport?.result || activeReport?.results || activeReport;
   const questionList = Array.isArray(resultData)
@@ -334,18 +439,23 @@ export default function App() {
     ? Object.values(resultData)
     : [];
 
+
   const getMaxScore = (q) => (q?.max_score ?? 10);
   const totalScore = questionList.reduce((sum, q) => sum + (q?.score || 0), 0);
   const maxTotal = questionList.reduce((sum, q) => sum + getMaxScore(q), 0);
   const averageScore = maxTotal ? ((totalScore / maxTotal) * 10).toFixed(1) : null;
   const passCount = questionList.filter((q) => (q?.score || 0) >= getMaxScore(q)).length;
+  const overallTier = maxTotal ? getScoreTier(totalScore, maxTotal) : "mid";
+
 
   const studentIds = isBatch && response?.results ? Object.keys(response.results) : [];
+
 
   const goToTab = (id) => {
     setActiveTab(id);
     if (id === "results") setHasNewResult(false);
   };
+
 
   return (
     <div className="app-shell">
@@ -384,6 +494,7 @@ export default function App() {
           )}
         </div>
 
+
         <nav className="sidebar-nav">
           {NAV_ITEMS.map((item) => (
             <button
@@ -399,6 +510,7 @@ export default function App() {
           ))}
         </nav>
 
+
         <div className="sidebar-footer">
           <div className="status-chip">
             <span className={`status-dot ${response ? "status-dot-ready" : ""}`} />
@@ -406,6 +518,7 @@ export default function App() {
           </div>
         </div>
       </aside>
+
 
       <main className="app-main">
         {activeTab === "upload" && (
@@ -422,11 +535,12 @@ export default function App() {
               </div>
             </header>
 
+
             <div className="upload-grid">
               <div className="dropzone-card">
                 <span className="dropzone-label">1. Rubric / Question Paper</span>
                 <label className="upload-pill">
-                  <span className="upload-icon" aria-hidden="true">📄</span>
+                  <span className="upload-icon" aria-hidden="true"><Icon name="document" /></span>
                   <span className="upload-text">
                     {rubricFile ? rubricFile.name : "Attach rubric — PDF, image, or text"}
                   </span>
@@ -443,12 +557,13 @@ export default function App() {
                 )}
               </div>
 
+
               <div className="dropzone-card">
                 <span className="dropzone-label">
                   2. Student Answer Sheet{answerFiles.length !== 1 ? "s" : ""}
                 </span>
                 <label className="upload-pill">
-                  <span className="upload-icon" aria-hidden="true">📝</span>
+                  <span className="upload-icon" aria-hidden="true"><Icon name="note" /></span>
                   <span className="upload-text">
                     {answerFiles.length === 0
                       ? "Attach one or more answer sheets — PDF, image, or text"
@@ -465,6 +580,7 @@ export default function App() {
                   />
                 </label>
 
+
                 {answerFiles.length > 0 && (
                   <ul className="file-chip-list">
                     {answerFiles.map((f, idx) => (
@@ -476,7 +592,7 @@ export default function App() {
                           aria-label={`Remove ${f.name}`}
                           title="Remove"
                         >
-                          ✕
+                          <Icon name="close" />
                         </button>
                       </li>
                     ))}
@@ -485,6 +601,7 @@ export default function App() {
               </div>
             </div>
 
+
             {answerFiles.length > 1 && (
               <p className="batch-hint">
                 Batch mode: {answerFiles.length} answer sheets will be graded against the same
@@ -492,6 +609,7 @@ export default function App() {
                 every student.
               </p>
             )}
+
 
             <div className="field-block">
               <span className="dropzone-label">Custom grading instructions (optional)</span>
@@ -502,7 +620,9 @@ export default function App() {
               />
             </div>
 
+
             {errorMsg && <p className="error-text">{errorMsg}</p>}
+
 
             <div className="actions">
               <button
@@ -527,6 +647,7 @@ export default function App() {
             </div>
           </section>
         )}
+
 
         {activeTab === "results" && (
           <section className="view">
@@ -556,9 +677,10 @@ export default function App() {
               </div>
             </header>
 
+
             {!response ? (
               <div className="empty-state">
-                <div className="empty-icon" aria-hidden="true">📊</div>
+                <div className="empty-icon" aria-hidden="true"><Icon name="chartEmpty" /></div>
                 <h3>No assessment yet</h3>
                 <p>Upload a rubric and answer sheet to generate your first score feed.</p>
                 <button className="button button-primary" onClick={() => goToTab("upload")}>
@@ -581,12 +703,13 @@ export default function App() {
                   </div>
                 )}
 
+
                 <div className="stat-row">
-                  <div className="stat-card">
+                  <div className={`stat-card stat-card-${overallTier}`}>
                     <span className="stat-label">Average score</span>
                     <span className="stat-value">{averageScore ? `${averageScore}` : "—"}<small>/10</small></span>
                   </div>
-                  <div className="stat-card">
+                  <div className={`stat-card stat-card-${overallTier}`}>
                     <span className="stat-label">Total points</span>
                     <span className="stat-value">{totalScore.toFixed(1)}<small>/{maxTotal.toFixed(0)}</small></span>
                   </div>
@@ -600,6 +723,7 @@ export default function App() {
                   </div>
                 </div>
 
+
                 {isRawMode ? (
                   <pre className="result-json">{JSON.stringify(response, null, 2)}</pre>
                 ) : (
@@ -611,12 +735,18 @@ export default function App() {
                       const isOpen = regradeOpenFor === noteKey;
                       const isBusy = regradeLoading === noteKey;
                       const canSubmit = dispute.claimed_mistake.trim().length >= 8;
+                      const questionScore = item?.score || 0;
+                      const questionMax = item?.max_score ?? 10;
+                      const scoreTier = getScoreTier(questionScore, questionMax);
+
 
                       return (
                         <article className="result-card" key={qid}>
                           <div className="card-meta">
                             <h3>{item?.question_id || `Question ${idx + 1}`}</h3>
-                            <span className="badge-pill">{(item?.score || 0).toFixed(1)} / {item?.max_score ?? 10}</span>
+                            <span className={`badge-pill badge-pill-${scoreTier}`}>
+                              {questionScore.toFixed(1)} / {questionMax}
+                            </span>
                           </div>
                           <div className="feedback-box">{item?.feedback || "No feedback provided."}</div>
                           {item?.criterion_scores?.length > 0 && (
@@ -625,11 +755,14 @@ export default function App() {
                                 <li key={cIdx}>
                                   {renderStatusIcon(crit.score, crit.weight)}
                                   <span>{crit.description}</span>
-                                  <span className="rubric-score">{crit.score}/{crit.weight}</span>
+                                  <span className={`rubric-score tier-${getScoreTier(crit.score, crit.weight)}`}>
+                                    {crit.score}/{crit.weight}
+                                  </span>
                                 </li>
                               ))}
                             </ul>
                           )}
+
 
                           {note && !note.error && (
                             <div className={`regrade-note ${note.changed ? "regrade-note-changed" : ""}`}>
@@ -642,6 +775,7 @@ export default function App() {
                             </div>
                           )}
                           {note?.error && <div className="regrade-note regrade-note-error">{note.error}</div>}
+
 
                           <div className="regrade-block">
                             {!isOpen ? (
@@ -675,6 +809,7 @@ export default function App() {
                                   </label>
                                 )}
 
+
                                 <label className="regrade-field">
                                   <span className="regrade-field-label">
                                     What did the grader get wrong? <em>(required — be specific)</em>
@@ -687,6 +822,7 @@ export default function App() {
                                   />
                                 </label>
 
+
                                 <label className="regrade-field">
                                   <span className="regrade-field-label">
                                     Quote the exact part of your answer that proves it (recommended)
@@ -698,6 +834,7 @@ export default function App() {
                                     onChange={(e) => setDispute((d) => ({ ...d, evidence_quote: e.target.value }))}
                                   />
                                 </label>
+
 
                                 <div className="regrade-actions">
                                   <button
@@ -734,6 +871,7 @@ export default function App() {
           </section>
         )}
 
+
         {activeTab === "chat" && (
           <section className="view view-chat">
             <header className="view-header">
@@ -745,6 +883,7 @@ export default function App() {
                 specific mistake — this chat cannot change scores.
               </p>
             </header>
+
 
             <div className="chat-shell">
               <div className="chat-window" ref={chatWindowRef}>
@@ -780,6 +919,7 @@ export default function App() {
                 )}
               </div>
 
+
               <form className="chat-form" onSubmit={handleSendChat}>
                 <input
                   value={chatInput}
@@ -803,6 +943,7 @@ export default function App() {
           </section>
         )}
       </main>
+
 
       <nav className="mobile-tabbar">
         {NAV_ITEMS.map((item) => (

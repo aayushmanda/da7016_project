@@ -424,8 +424,6 @@ textarea:focus-visible,
   border: 1px solid var(--line);
 }
 
-/* "You" bubble uses the same light blue tint used throughout the app,
-   with dark text (white text would be unreadable on this light bg). */
 .chat-user .chat-bubble {
   background: var(--blue-tint);
   border-color: var(--blue-tint);
@@ -448,7 +446,6 @@ textarea:focus-visible,
 
 @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
-/* Markdown rendering inside chat bubbles (react-markdown + remark-gfm) */
 .chat-markdown {
   font-size: 0.9rem;
   line-height: 1.55;
@@ -523,8 +520,6 @@ textarea:focus-visible,
   background: rgba(26, 115, 232, 0.12);
 }
 
-/* Pill-shaped input bar with an integrated circular send button --
-   floating, no boxed border, matching Gemini's search-bar look. */
 .chat-form {
   display: flex;
   align-items: center;
@@ -671,4 +666,90 @@ textarea:focus-visible,
 .sidebar-collapsed .status-chip {
   justify-content: center;
   padding: 6px 0;
+}
+
+/* ==================================================================
+   Multi-file answer sheet upload (batch grading)
+================================================================== */
+.file-chip-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.file-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+}
+
+.file-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.file-chip-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--red);
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.file-chip-remove:hover {
+  background: var(--red-tint);
+}
+
+.batch-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--blue-dark);
+  background: var(--blue-tint);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+}
+
+.student-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.student-tab {
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.student-tab:hover {
+  background: var(--blue-tint);
+  color: var(--blue-dark);
+}
+
+.student-tab-active {
+  background: var(--blue);
+  color: white;
+  border-color: var(--blue);
 }

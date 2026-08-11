@@ -77,13 +77,17 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState("upload");
   const [rubricFile, setRubricFile] = useState(null);
-  const [answerFile, setAnswerFile] = useState(null);
+  // Multiple answer sheets -- one student per file. Single-file uploads
+  // still work exactly as before; 2+ files route to the batch endpoint.
+  const [answerFiles, setAnswerFiles] = useState([]);
   const [additionalInstructions, setAdditionalInstructions] = useState("");
   const [loading, setLoading] = useState(false);
   const [isRawMode, setIsRawMode] = useState(false);
   const [copyStatus, setCopyStatus] = useState("Copy JSON");
   const [errorMsg, setErrorMsg] = useState("");
   const [response, setResponse] = useState(null);
+  const [isBatch, setIsBatch] = useState(false);
+  const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [hasNewResult, setHasNewResult] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
@@ -121,21 +125,55 @@ export default function App() {
     });
   };
 
+  // Appends newly picked answer-sheet files to the existing list instead of
+  // replacing it, and de-dupes by name+size so re-selecting the same file
+  // doesn't create a duplicate entry.
+  const handleAddAnswerFiles = (fileList) => {
+    const newFiles = Array.from(fileList || []);
+    setAnswerFiles((prev) => {
+      const existingKeys = new Set(prev.map((f) => `${f.name}_${f.size}`));
+      const merged = [...prev];
+      for (const f of newFiles) {
+        const key = `${f.name}_${f.size}`;
+        if (!existingKeys.has(key)) {
+          merged.push(f);
+          existingKeys.add(key);
+        }
+      }
+      return merged;
+    });
+  };
+
+  const removeAnswerFile = (index) => {
+    setAnswerFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleAssess = async () => {
-    if (!rubricFile && !answerFile) {
+    if (!rubricFile && answerFiles.length === 0) {
       setErrorMsg("Please upload at least an answer sheet or rubric file.");
       return;
     }
     setErrorMsg("");
     setLoading(true);
 
+    const useBatch = answerFiles.length > 1;
+
     const formData = new FormData();
     if (rubricFile) formData.append("rubric_file", rubricFile);
-    if (answerFile) formData.append("answer_file", answerFile);
     if (additionalInstructions.trim()) formData.append("instructions", additionalInstructions.trim());
 
+    if (useBatch) {
+      answerFiles.forEach((f) => formData.append("answer_files", f));
+      answerFiles.forEach((f) => formData.append("student_ids", f.name));
+    } else if (answerFiles.length === 1) {
+      formData.append("answer_file", answerFiles[0]);
+    }
+
     try {
-      const res = await fetch("/api/assess", { method: "POST", body: formData });
+      const res = await fetch(useBatch ? "/api/assess/batch" : "/api/assess", {
+        method: "POST",
+        body: formData,
+      });
 
       if (!res.ok) {
         let rawDetail = "";
@@ -151,6 +189,13 @@ export default function App() {
 
       const data = await res.json();
       setResponse(data);
+      setIsBatch(useBatch);
+      if (useBatch && data.results) {
+        const firstId = Object.keys(data.results)[0] || null;
+        setSelectedStudentId(firstId);
+      } else {
+        setSelectedStudentId(null);
+      }
       setRegradeNotes({});
       setHasNewResult(true);
       setActiveTab("results");
@@ -211,6 +256,8 @@ export default function App() {
   // Calls the regrade endpoint with a STRUCTURED dispute (specific claimed
   // mistake, optional criterion + evidence quote) instead of a vague reason,
   // so the backend is checking a falsifiable claim, not just "please regrade".
+  // Passes student_id when in batch mode so the right student's session is
+  // updated, not just "whichever was graded last".
   const handleRequestRegrade = async (questionId) => {
     if (!dispute.claimed_mistake.trim() || dispute.claimed_mistake.trim().length < 8) return;
     setRegradeLoading(questionId);
@@ -224,6 +271,7 @@ export default function App() {
           claimed_mistake: dispute.claimed_mistake.trim(),
           disputed_criterion: dispute.disputed_criterion.trim() || null,
           evidence_quote: dispute.evidence_quote.trim() || null,
+          student_id: isBatch ? selectedStudentId : undefined,
         }),
       });
       const data = await res.json();
@@ -236,9 +284,17 @@ export default function App() {
         return;
       }
 
-      // Replace the whole report with the backend's updated version so the
-      // score, feedback, and criteria all reflect the regrade consistently.
-      setResponse(data.report);
+      // Replace just this student's report (batch mode) or the whole
+      // response (single mode) with the backend's updated version.
+      if (isBatch && selectedStudentId) {
+        setResponse((prev) => ({
+          ...prev,
+          results: { ...prev.results, [selectedStudentId]: data.report },
+        }));
+      } else {
+        setResponse(data.report);
+      }
+
       setRegradeNotes((prev) => ({
         ...prev,
         [questionId]: {
@@ -265,21 +321,26 @@ export default function App() {
     return <span className="rubric-icon fail">✕</span>;
   };
 
-  const resultData = response?.result || response?.results || response;
+  // In batch mode, pull the currently selected student's report out of
+  // response.results; otherwise use the single-student response as before.
+  const activeReport = isBatch
+    ? response?.results?.[selectedStudentId]
+    : response;
+
+  const resultData = activeReport?.result || activeReport?.results || activeReport;
   const questionList = Array.isArray(resultData)
     ? resultData
     : resultData && typeof resultData === "object"
     ? Object.values(resultData)
     : [];
 
-  // Only default to 10 when max_score is genuinely missing (null/undefined),
-  // never silently overwrite a real 0.
   const getMaxScore = (q) => (q?.max_score ?? 10);
   const totalScore = questionList.reduce((sum, q) => sum + (q?.score || 0), 0);
   const maxTotal = questionList.reduce((sum, q) => sum + getMaxScore(q), 0);
-  // Normalized to a /10 scale using ACTUAL total possible points.
   const averageScore = maxTotal ? ((totalScore / maxTotal) * 10).toFixed(1) : null;
   const passCount = questionList.filter((q) => (q?.score || 0) >= getMaxScore(q)).length;
+
+  const studentIds = isBatch && response?.results ? Object.keys(response.results) : [];
 
   const goToTab = (id) => {
     setActiveTab(id);
@@ -309,7 +370,6 @@ export default function App() {
               </button>
             </>
           ) : (
-            // Collapsed: ONE clickable icon (no separate arrow box stacked on top).
             <button
               className="brand-mark brand-mark-toggle"
               onClick={() => setSidebarOpen(true)}
@@ -355,8 +415,9 @@ export default function App() {
                 <p className="view-eyebrow">Step 1 of 3</p>
                 <h1>Upload documents</h1>
                 <p className="view-subtitle">
-                  Attach a rubric or question paper and the student's answer sheet. Our AI agent
-                  evaluates responses and produces a question-by-question breakdown.
+                  Attach a rubric or question paper and one or more student answer sheets.
+                  Upload multiple answer sheets to grade several students against the same
+                  rubric in one batch.
                 </p>
               </div>
             </header>
@@ -383,25 +444,54 @@ export default function App() {
               </div>
 
               <div className="dropzone-card">
-                <span className="dropzone-label">2. Student Answer Sheet</span>
+                <span className="dropzone-label">
+                  2. Student Answer Sheet{answerFiles.length !== 1 ? "s" : ""}
+                </span>
                 <label className="upload-pill">
                   <span className="upload-icon" aria-hidden="true">📝</span>
                   <span className="upload-text">
-                    {answerFile ? answerFile.name : "Attach answer sheet — PDF, image, or text"}
+                    {answerFiles.length === 0
+                      ? "Attach one or more answer sheets — PDF, image, or text"
+                      : `${answerFiles.length} file${answerFiles.length > 1 ? "s" : ""} selected — add more or remove below`}
                   </span>
                   <input
                     type="file"
                     accept="image/*,.pdf,.docx,.txt"
-                    onChange={(e) => setAnswerFile(e.target.files?.[0] || null)}
+                    multiple
+                    onChange={(e) => {
+                      handleAddAnswerFiles(e.target.files);
+                      e.target.value = "";
+                    }}
                   />
                 </label>
-                {answerFile && (
-                  <button className="remove-link" onClick={() => setAnswerFile(null)}>
-                    Remove file
-                  </button>
+
+                {answerFiles.length > 0 && (
+                  <ul className="file-chip-list">
+                    {answerFiles.map((f, idx) => (
+                      <li key={`${f.name}_${f.size}_${idx}`} className="file-chip">
+                        <span className="file-chip-name">{f.name}</span>
+                        <button
+                          className="file-chip-remove"
+                          onClick={() => removeAnswerFile(idx)}
+                          aria-label={`Remove ${f.name}`}
+                          title="Remove"
+                        >
+                          ✕
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
             </div>
+
+            {answerFiles.length > 1 && (
+              <p className="batch-hint">
+                Batch mode: {answerFiles.length} answer sheets will be graded against the same
+                rubric/question paper. The master answer key is generated once and reused for
+                every student.
+              </p>
+            )}
 
             <div className="field-block">
               <span className="dropzone-label">Custom grading instructions (optional)</span>
@@ -418,10 +508,16 @@ export default function App() {
               <button
                 className={`button button-primary button-lg ${loading ? "button-loading" : ""}`}
                 onClick={handleAssess}
-                disabled={loading || (!rubricFile && !answerFile)}
+                disabled={loading || (!rubricFile && answerFiles.length === 0)}
               >
                 <span className="button-loader" aria-hidden="true" />
-                <span className="button-text">{loading ? "Evaluating documents…" : "Start assessment"}</span>
+                <span className="button-text">
+                  {loading
+                    ? "Evaluating documents…"
+                    : answerFiles.length > 1
+                    ? `Start batch assessment (${answerFiles.length})`
+                    : "Start assessment"}
+                </span>
               </button>
               {response && (
                 <button className="button button-ghost" onClick={() => goToTab("results")}>
@@ -471,6 +567,20 @@ export default function App() {
               </div>
             ) : (
               <>
+                {isBatch && studentIds.length > 0 && (
+                  <div className="student-tabs">
+                    {studentIds.map((id) => (
+                      <button
+                        key={id}
+                        className={`student-tab ${selectedStudentId === id ? "student-tab-active" : ""}`}
+                        onClick={() => setSelectedStudentId(id)}
+                      >
+                        {id}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 <div className="stat-row">
                   <div className="stat-card">
                     <span className="stat-label">Average score</span>
@@ -496,9 +606,10 @@ export default function App() {
                   <div className="result-cards">
                     {questionList.map((item, idx) => {
                       const qid = item?.question_id ?? `Question ${idx + 1}`;
-                      const note = regradeNotes[qid];
-                      const isOpen = regradeOpenFor === qid;
-                      const isBusy = regradeLoading === qid;
+                      const noteKey = isBatch ? `${selectedStudentId}::${qid}` : qid;
+                      const note = regradeNotes[noteKey];
+                      const isOpen = regradeOpenFor === noteKey;
+                      const isBusy = regradeLoading === noteKey;
                       const canSubmit = dispute.claimed_mistake.trim().length >= 8;
 
                       return (
@@ -537,7 +648,7 @@ export default function App() {
                               <button
                                 className="button button-ghost button-sm"
                                 onClick={() => {
-                                  setRegradeOpenFor(qid);
+                                  setRegradeOpenFor(noteKey);
                                   setDispute({
                                     ...emptyDispute,
                                     disputed_criterion: item?.criterion_scores?.[0]?.description || "",

@@ -118,9 +118,9 @@ curl -X POST "http://127.0.0.1:8000/api/chat" \
 - Rubric-defensibility is currently checked by a single audit pass (Agent 4). There is no external human-in-the-loop verification step by design.
 
 ## Frontend
-![alt text](<Screenshot 2026-08-11 at 9.37.46 AM-1.png>) 
-![alt text](<Screenshot 2026-08-11 at 9.37.58 AM-1.png>) 
-![alt text](<Screenshot 2026-08-11 at 9.38.07 AM-1.png>)
+![alt text](<Screenshot 2026-08-11 at 9.37.46 AM.png>) 
+![alt text](<Screenshot 2026-08-11 at 9.37.58 AM.png>)
+![alt text](<Screenshot 2026-08-11 at 9.38.07 AM.png>)
 
 ## Roadmap
 

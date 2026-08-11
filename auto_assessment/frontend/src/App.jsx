@@ -50,6 +50,27 @@ function Icon({ name }) {
   );
 }
 
+// Cleans up ugly backend/Groq error strings into something a user can
+// actually read, regardless of the exact wording that came through.
+function parseErrorMessage(status, rawDetail) {
+  const text = String(rawDetail || "").trim();
+
+  if (status === 429 || /rate.?limit/i.test(text)) {
+    return "The grading model has hit its usage limit for now. Please wait a few minutes and try again.";
+  }
+
+  const messageMatch = text.match(/'message':\s*'([^']+)'/);
+  if (messageMatch) {
+    return messageMatch[1];
+  }
+
+  if (text.startsWith("{") || text.startsWith("[")) {
+    return "Something went wrong while processing your request. Please try again.";
+  }
+
+  return text || "An unexpected error occurred.";
+}
+
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
 
 export default function App() {
@@ -115,11 +136,19 @@ export default function App() {
 
     try {
       const res = await fetch("/api/assess", { method: "POST", body: formData });
+
       if (!res.ok) {
-        const errText = await res.text();
-        setErrorMsg(errText || "Failed to process files.");
+        let rawDetail = "";
+        try {
+          const errBody = await res.json();
+          rawDetail = errBody.detail || JSON.stringify(errBody);
+        } catch {
+          rawDetail = await res.text();
+        }
+        setErrorMsg(parseErrorMessage(res.status, rawDetail));
         return;
       }
+
       const data = await res.json();
       setResponse(data);
       setRegradeNotes({});
@@ -148,6 +177,22 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: updatedMessages, hasAssessment: !!response }),
       });
+
+      if (!res.ok) {
+        let rawDetail = "";
+        try {
+          const errBody = await res.json();
+          rawDetail = errBody.detail || JSON.stringify(errBody);
+        } catch {
+          rawDetail = await res.text();
+        }
+        setChatMessages([
+          ...updatedMessages,
+          { role: "assistant", content: parseErrorMessage(res.status, rawDetail) },
+        ]);
+        return;
+      }
+
       const data = await res.json();
       setChatMessages([
         ...updatedMessages,
@@ -186,7 +231,7 @@ export default function App() {
       if (!res.ok) {
         setRegradeNotes((prev) => ({
           ...prev,
-          [questionId]: { error: data.detail || "Re-evaluation failed." },
+          [questionId]: { error: parseErrorMessage(res.status, data.detail) },
         }));
         return;
       }

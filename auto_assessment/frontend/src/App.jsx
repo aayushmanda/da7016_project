@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import "./styles.css";
 
 const NAV_ITEMS = [
@@ -23,12 +25,21 @@ function Icon({ name }) {
     ),
     chat: (
       <>
-        <path
-          d="M4 5h16v11H8l-4 4V5Z"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinejoin="round"
-        />
+        <path d="M4 5h16v11H8l-4 4V5Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+      </>
+    ),
+    collapse: (
+      <>
+        <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M9 4v16" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M14 9l-2 3 2 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    expand: (
+      <>
+        <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M9 4v16" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M13 9l2 3-2 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
       </>
     ),
   };
@@ -39,7 +50,10 @@ function Icon({ name }) {
   );
 }
 
+const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
+
 export default function App() {
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState("upload");
   const [rubricFile, setRubricFile] = useState(null);
   const [answerFile, setAnswerFile] = useState(null);
@@ -54,6 +68,11 @@ export default function App() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const chatWindowRef = useRef(null);
+
+  const [regradeOpenFor, setRegradeOpenFor] = useState(null);
+  const [dispute, setDispute] = useState(emptyDispute);
+  const [regradeLoading, setRegradeLoading] = useState(null);
+  const [regradeNotes, setRegradeNotes] = useState({});
 
   useEffect(() => {
     if (chatWindowRef.current) {
@@ -103,6 +122,7 @@ export default function App() {
       }
       const data = await res.json();
       setResponse(data);
+      setRegradeNotes({});
       setHasNewResult(true);
       setActiveTab("results");
     } catch (err) {
@@ -143,6 +163,57 @@ export default function App() {
     }
   };
 
+  // Calls the regrade endpoint with a STRUCTURED dispute (specific claimed
+  // mistake, optional criterion + evidence quote) instead of a vague reason,
+  // so the backend is checking a falsifiable claim, not just "please regrade".
+  const handleRequestRegrade = async (questionId) => {
+    if (!dispute.claimed_mistake.trim() || dispute.claimed_mistake.trim().length < 8) return;
+    setRegradeLoading(questionId);
+
+    try {
+      const res = await fetch("/api/regrade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question_id: questionId,
+          claimed_mistake: dispute.claimed_mistake.trim(),
+          disputed_criterion: dispute.disputed_criterion.trim() || null,
+          evidence_quote: dispute.evidence_quote.trim() || null,
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setRegradeNotes((prev) => ({
+          ...prev,
+          [questionId]: { error: data.detail || "Re-evaluation failed." },
+        }));
+        return;
+      }
+
+      // Replace the whole report with the backend's updated version so the
+      // score, feedback, and criteria all reflect the regrade consistently.
+      setResponse(data.report);
+      setRegradeNotes((prev) => ({
+        ...prev,
+        [questionId]: {
+          changed: data.changed,
+          claimVerified: data.claim_verified,
+          explanation: data.explanation,
+        },
+      }));
+      setRegradeOpenFor(null);
+      setDispute(emptyDispute);
+    } catch (err) {
+      setRegradeNotes((prev) => ({
+        ...prev,
+        [questionId]: { error: err.message || "Re-evaluation failed." },
+      }));
+    } finally {
+      setRegradeLoading(null);
+    }
+  };
+
   const renderStatusIcon = (score, weight) => {
     if (score >= weight) return <span className="rubric-icon pass">✓</span>;
     if (score >= weight * 0.5) return <span className="rubric-icon partial">~</span>;
@@ -156,10 +227,14 @@ export default function App() {
     ? Object.values(resultData)
     : [];
 
+  // Only default to 10 when max_score is genuinely missing (null/undefined),
+  // never silently overwrite a real 0.
+  const getMaxScore = (q) => (q?.max_score ?? 10);
   const totalScore = questionList.reduce((sum, q) => sum + (q?.score || 0), 0);
-  const maxTotal = questionList.reduce((sum, q) => sum + (q?.max_score || 10), 0);
-  const averageScore = questionList.length ? (totalScore / questionList.length).toFixed(1) : null;
-  const passCount = questionList.filter((q) => (q?.score || 0) >= (q?.max_score || 10)).length;
+  const maxTotal = questionList.reduce((sum, q) => sum + getMaxScore(q), 0);
+  // Normalized to a /10 scale using ACTUAL total possible points.
+  const averageScore = maxTotal ? ((totalScore / maxTotal) * 10).toFixed(1) : null;
+  const passCount = questionList.filter((q) => (q?.score || 0) >= getMaxScore(q)).length;
 
   const goToTab = (id) => {
     setActiveTab(id);
@@ -168,15 +243,40 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
         <div className="sidebar-brand">
-          <span className="brand-mark" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <path d="M12 2 3 7l9 5 9-5-9-5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-              <path d="M6 10.5v5c0 .5 2.6 2.5 6 2.5s6-2 6-2.5v-5" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-            </svg>
-          </span>
-          <span className="brand-name">AutoAssessment</span>
+          {sidebarOpen ? (
+            <>
+              <span className="brand-mark" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 2 3 7l9 5 9-5-9-5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+                  <path d="M6 10.5v5c0 .5 2.6 2.5 6 2.5s6-2 6-2.5v-5" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+                </svg>
+              </span>
+              <span className="brand-name">AutoAssessment</span>
+              <button
+                className="sidebar-toggle"
+                onClick={() => setSidebarOpen(false)}
+                aria-label="Collapse sidebar"
+                title="Collapse sidebar"
+              >
+                <Icon name="collapse" />
+              </button>
+            </>
+          ) : (
+            // Collapsed: ONE clickable icon (no separate arrow box stacked on top).
+            <button
+              className="brand-mark brand-mark-toggle"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Expand sidebar"
+              title="Expand sidebar"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                <path d="M12 2 3 7l9 5 9-5-9-5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+                <path d="M6 10.5v5c0 .5 2.6 2.5 6 2.5s6-2 6-2.5v-5" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+              </svg>
+            </button>
+          )}
         </div>
 
         <nav className="sidebar-nav">
@@ -185,9 +285,10 @@ export default function App() {
               key={item.id}
               className={`nav-item ${activeTab === item.id ? "nav-item-active" : ""}`}
               onClick={() => goToTab(item.id)}
+              title={item.label}
             >
               <Icon name={item.icon} />
-              <span>{item.label}</span>
+              {sidebarOpen && <span>{item.label}</span>}
               {item.id === "results" && hasNewResult && <span className="nav-dot" aria-hidden="true" />}
             </button>
           ))}
@@ -196,7 +297,7 @@ export default function App() {
         <div className="sidebar-footer">
           <div className="status-chip">
             <span className={`status-dot ${response ? "status-dot-ready" : ""}`} />
-            {response ? "Assessment ready" : "No assessment yet"}
+            {sidebarOpen && (response ? "Assessment ready" : "No assessment yet")}
           </div>
         </div>
       </aside>
@@ -339,8 +440,8 @@ export default function App() {
                     <span className="stat-value">{questionList.length}</span>
                   </div>
                   <div className="stat-card">
-                    <span className="stat-label">Full marks</span>
-                    <span className="stat-value">{passCount}<small>/{questionList.length}</small></span>
+                    <span className="stat-label">Perfect Scores</span>
+                    <span className="stat-value">{passCount}<small>/{questionList.length} questions</small></span>
                   </div>
                 </div>
 
@@ -348,26 +449,128 @@ export default function App() {
                   <pre className="result-json">{JSON.stringify(response, null, 2)}</pre>
                 ) : (
                   <div className="result-cards">
-                    {questionList.map((item, idx) => (
-                      <article className="result-card" key={item?.question_id ?? idx}>
-                        <div className="card-meta">
-                          <h3>{item?.question_id || `Question ${idx + 1}`}</h3>
-                          <span className="badge-pill">{(item?.score || 0).toFixed(1)} / {item?.max_score ?? 10}</span>
-                        </div>
-                        <div className="feedback-box">{item?.feedback || "No feedback provided."}</div>
-                        {item?.criterion_scores?.length > 0 && (
-                          <ul className="rubric-list">
-                            {item.criterion_scores.map((crit, cIdx) => (
-                              <li key={cIdx}>
-                                {renderStatusIcon(crit.score, crit.weight)}
-                                <span>{crit.description}</span>
-                                <span className="rubric-score">{crit.score}/{crit.weight}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </article>
-                    ))}
+                    {questionList.map((item, idx) => {
+                      const qid = item?.question_id ?? `Question ${idx + 1}`;
+                      const note = regradeNotes[qid];
+                      const isOpen = regradeOpenFor === qid;
+                      const isBusy = regradeLoading === qid;
+                      const canSubmit = dispute.claimed_mistake.trim().length >= 8;
+
+                      return (
+                        <article className="result-card" key={qid}>
+                          <div className="card-meta">
+                            <h3>{item?.question_id || `Question ${idx + 1}`}</h3>
+                            <span className="badge-pill">{(item?.score || 0).toFixed(1)} / {item?.max_score ?? 10}</span>
+                          </div>
+                          <div className="feedback-box">{item?.feedback || "No feedback provided."}</div>
+                          {item?.criterion_scores?.length > 0 && (
+                            <ul className="rubric-list">
+                              {item.criterion_scores.map((crit, cIdx) => (
+                                <li key={cIdx}>
+                                  {renderStatusIcon(crit.score, crit.weight)}
+                                  <span>{crit.description}</span>
+                                  <span className="rubric-score">{crit.score}/{crit.weight}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+
+                          {note && !note.error && (
+                            <div className={`regrade-note ${note.changed ? "regrade-note-changed" : ""}`}>
+                              <strong>
+                                {note.claimVerified
+                                  ? note.changed ? "Claim verified — score updated: " : "Claim verified: "
+                                  : "Claim not verified — score unchanged: "}
+                              </strong>
+                              {note.explanation}
+                            </div>
+                          )}
+                          {note?.error && <div className="regrade-note regrade-note-error">{note.error}</div>}
+
+                          <div className="regrade-block">
+                            {!isOpen ? (
+                              <button
+                                className="button button-ghost button-sm"
+                                onClick={() => {
+                                  setRegradeOpenFor(qid);
+                                  setDispute({
+                                    ...emptyDispute,
+                                    disputed_criterion: item?.criterion_scores?.[0]?.description || "",
+                                  });
+                                }}
+                              >
+                                Request re-evaluation
+                              </button>
+                            ) : (
+                              <div className="regrade-form">
+                                {item?.criterion_scores?.length > 0 && (
+                                  <label className="regrade-field">
+                                    <span className="regrade-field-label">Which criterion is disputed? (optional)</span>
+                                    <select
+                                      className="regrade-select"
+                                      value={dispute.disputed_criterion}
+                                      onChange={(e) => setDispute((d) => ({ ...d, disputed_criterion: e.target.value }))}
+                                    >
+                                      <option value="">Whole question — no specific criterion</option>
+                                      {item.criterion_scores.map((crit, cIdx) => (
+                                        <option key={cIdx} value={crit.description}>{crit.description}</option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                )}
+
+                                <label className="regrade-field">
+                                  <span className="regrade-field-label">
+                                    What did the grader get wrong? <em>(required — be specific)</em>
+                                  </span>
+                                  <textarea
+                                    className="regrade-textarea"
+                                    placeholder="e.g. 'You said I didn't show the chain rule, but I did — see my evidence below.'"
+                                    value={dispute.claimed_mistake}
+                                    onChange={(e) => setDispute((d) => ({ ...d, claimed_mistake: e.target.value }))}
+                                  />
+                                </label>
+
+                                <label className="regrade-field">
+                                  <span className="regrade-field-label">
+                                    Quote the exact part of your answer that proves it (recommended)
+                                  </span>
+                                  <textarea
+                                    className="regrade-textarea regrade-textarea-sm"
+                                    placeholder="Paste the exact line/step from your submission here..."
+                                    value={dispute.evidence_quote}
+                                    onChange={(e) => setDispute((d) => ({ ...d, evidence_quote: e.target.value }))}
+                                  />
+                                </label>
+
+                                <div className="regrade-actions">
+                                  <button
+                                    className="button button-primary button-sm"
+                                    onClick={() => handleRequestRegrade(qid)}
+                                    disabled={isBusy || !canSubmit}
+                                  >
+                                    {isBusy ? "Verifying claim…" : "Submit request"}
+                                  </button>
+                                  <button
+                                    className="button button-muted button-sm"
+                                    onClick={() => {
+                                      setRegradeOpenFor(null);
+                                      setDispute(emptyDispute);
+                                    }}
+                                    disabled={isBusy}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                                {!canSubmit && dispute.claimed_mistake.length > 0 && (
+                                  <p className="regrade-hint">Please describe the specific mistake in more detail (min 8 characters).</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
                   </div>
                 )}
               </>
@@ -380,18 +583,22 @@ export default function App() {
             <header className="view-header">
               <p className="view-eyebrow">Step 3 of 3</p>
               <h1>Agent chat</h1>
-              <p className="view-subtitle">Ask follow-up questions or request grade adjustments.</p>
+              <p className="view-subtitle">
+                Ask follow-up questions about the grading. For an actual score change, use
+                "Request re-evaluation" on the question card in Score Feed and name the
+                specific mistake — this chat cannot change scores.
+              </p>
             </header>
 
             <div className="chat-shell">
               <div className="chat-window" ref={chatWindowRef}>
                 {chatMessages.length === 0 ? (
                   <div className="chat-empty">
-                    <p>Ask things like:</p>
+                    <p className="chat-empty-heading">What would you like to know?</p>
                     <div className="chat-suggestions">
                       <button onClick={() => setChatInput("Why did Q1 lose points?")}>Why did Q1 lose points?</button>
                       <button onClick={() => setChatInput("Summarize the overall performance.")}>Summarize overall performance</button>
-                      <button onClick={() => setChatInput("Regrade Q2 more leniently.")}>Regrade Q2 more leniently</button>
+                      <button onClick={() => setChatInput("Which question had the weakest answer?")}>Which question was weakest?</button>
                     </div>
                   </div>
                 ) : (
@@ -399,7 +606,9 @@ export default function App() {
                     <div key={index} className={`chat-message ${msg.role === "user" ? "chat-user" : "chat-agent"}`}>
                       <div className="chat-bubble">
                         <span className="chat-role">{msg.role === "user" ? "You" : "Agent"}</span>
-                        <p>{msg.content}</p>
+                        <div className="chat-markdown">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                        </div>
                       </div>
                     </div>
                   ))
@@ -419,11 +628,19 @@ export default function App() {
                 <input
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
-                  placeholder="e.g. Why did Q1 lose points? Regrade Q2..."
+                  placeholder="e.g. Why did Q1 lose points?"
                   autoComplete="off"
                 />
-                <button className="button button-primary" type="submit" disabled={chatLoading}>
-                  Send
+                <button
+                  className="chat-send-btn"
+                  type="submit"
+                  disabled={chatLoading || !chatInput.trim()}
+                  aria-label="Send"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 19V5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                    <path d="M6 11l6-6 6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </button>
               </form>
             </div>

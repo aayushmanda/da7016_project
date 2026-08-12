@@ -1,0 +1,6 @@
+#!/workspaces/da7016_project/.venv/bin/python3
+import sys
+from instructor.cli.cli import app
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(app())

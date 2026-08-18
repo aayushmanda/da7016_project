@@ -1,52 +1,65 @@
 # Auto-Assessment Agent
 
-A multi-agent, rubric-based grading system that evaluates student answer sheets against a rubric and produces detailed, question-by-question, rubric-defensible feedback — end-to-end, with no human reviewer in the loop.
+A multi-agent, evidence-anchored rubric grading system that evaluates handwritten and typed student answer sheets against question papers and rubrics, producing question-by-question, criterion-level, and diagnostic feedback — end-to-end.
 
-Upload a rubric/question paper and a student's answer sheet (PDF, image, or text), and the system transcribes handwritten pages, generates a master answer key, grades each question against its rubric criteria, audits its own scoring for consistency, and lets you follow up with a conversational agent about the results.
+Upload a rubric/question paper and a student's answer sheet (PDF, image, or text), with an optional official model answer. The system transcribes handwritten pages, generates or aligns with a reference solution, evaluates each rubric criterion with extracted student evidence quotes, enforces deterministic score audits in Python, and provides both structured regrading and interactive follow-up chat.
 
-<video controls src="run.mov" title="View"></video>
+<video width="100%" controls>
+  <source src="run.mp4" type="video/mp4">
+</video>
+
+---
 
 ## How It Works
 
-The grading pipeline runs as four cooperating agents rather than a single prompt:
+The grading pipeline runs as cooperating specialized agents with strict Pydantic data contracts:
 
-| Agent | Role |
-|---|---|
-| **Transcriber** | Converts handwritten/scanned question paper and answer sheet images into clean Markdown text via a vision model |
-| **Solver** | Generates a step-by-step master answer key from the question paper and rubric |
-| **Evaluator** | Grades the student's submission against the rubric and answer key, producing structured per-question and per-criterion scores |
-| **Auditor** | Reviews the initial grading pass, correcting any score that doesn't total correctly or lacks a clear justification |
+| Agent / Stage | Role | Execution & Model |
+|---|---|---|
+| **Transcriber** | Converts handwritten/scanned PDFs and image uploads into clean, structured Markdown | `gemini-3.5-flash-lite` (Multimodal) |
+| **Solver** | Generates a step-by-step master answer key (bypassed if official answer key is provided) | `gemini-3.5-flash-lite` |
+| **Evaluator** | Evaluates student work against criteria, extracts verbatim evidence quotes, and generates actionable rules | `gemini-3.5-flash-lite` (Structured JSON) |
+| **Auditor** | Deterministically audits arithmetic totals and score bounds in Python code | Deterministic Invariant Validator |
+| **Regrade Agent** | Audits falsifiable student disputes by verifying quoted evidence against raw submissions | `gemini-3.5-flash-lite` |
+| **Chat Agent** | Contextual multi-turn reasoning agent answering questions about marks and feedback | `gemini-3.5-flash-lite` |
 
-Grading runs fully automatically from the inputs provided — there is no manual review step. The bar for output quality is that feedback must be specific and rubric-defensible enough for a student to act on it directly.
+Grading runs automatically with deterministic guardrails. Feedback is prescriptive, actionable, and rubric-defensible so students understand exactly where points were deducted and what to write on their next attempt.
+
+---
 
 ## Repository Structure
 
 ```
 auto_assessment/
 ├── auto_assessment/
-│   ├── agent.py             # Multi-agent pipeline: Transcriber, Solver, Evaluator, Auditor
-│   ├── web.py                # FastAPI app exposing /api/assess and /api/chat
-│   ├── document_parser.py    # Extracts text + images from PDFs, images, and plain text uploads
-│   └── __init__.py
+│   ├── agent.py               # Multi-agent pipeline: Transcriber, Solver, Evaluator, Auditor, Regrade
+│   ├── web.py                 # FastAPI backend exposing /api/assess, /api/regrade, /api/chat, and /api/assessments
+│   ├── document_parser.py     # Ingestion & validation for raw PDFs, images, and text uploads
+│   └── assessment_history.db  # SQLite database storing versioned assessment sessions
 └── frontend/
     ├── src/
-    │   ├── App.jsx            # Upload / Score Feed / Agent Chat views
-    │   └── styles.css
+    │   ├── App.jsx            # Upload, Score Feed, History, and Agent Chat views
+    │   └── styles.css         # Full-width fluid layout & design tokens
     ├── index.html
     └── package.json
 ```
 
+---
+
 ## Frontend
 
-The web UI is a single-page app with three views reachable from a persistent sidebar (a bottom tab bar on mobile):
+The web UI is a fluid, single-page application featuring four views accessible from a persistent sidebar (and a bottom tab bar on mobile):
 
-- **Upload** — attach the rubric/question paper and the student's answer sheet (PDF, image, or text), plus optional custom grading instructions
-- **Score Feed** — summary stats (average score, total points, questions graded, full-marks count) followed by a per-question breakdown with rubric criteria, or a raw JSON view for debugging/export
-- **Agent Chat** — ask follow-up questions about the grading (e.g. "Why did Q1 lose points?") or request adjustments
+- **Upload** — attach the question paper/rubric and student answer sheet(s) (PDF, image, or text), plus an optional official model answer and custom grading instructions.
+- **Score Feed** — growth synthesis banner (**Key Strengths** & **Priority Focus Areas**), summary metrics, and per-question cards with **Concept Tags**, **Next-Time Actionable Rules**, and verbatim student evidence quotes.
+- **History** — review and reload past evaluations instantly from SQLite storage without re-uploading documents.
+- **Agent Chat** — ask follow-up questions about the assessment (e.g., *"Why did Q1 lose points?"*) with an interface that dynamically expands when the sidebar is collapsed.
 
-![Upload view](<images/upload.png>) 
-![Score Feed view](<images/score_feed.png>)
-![Agent Chat view](<images/agent_chat.png>)
+![Upload view](images/upload.png) 
+![Score Feed view](images/score_feed.png)
+![Agent Chat view](images/agent_chat.png)
+
+---
 
 ## Installation
 
@@ -57,20 +70,24 @@ pip install -r requirements.txt
 **Required environment variable:**
 
 ```bash
-export GROQ_API_KEY="your-groq-key"
+export GEMINI_API_KEY="your-gemini-api-key"
 ```
 
-**System dependency for scanned/handwritten PDFs:** PDF-to-image conversion relies on `poppler`, which is not installable via pip alone.
+*(Optional model configuration overrides:)*
 
-- macOS: `brew install poppler`
-- Ubuntu/Debian: `sudo apt-get install poppler-utils`
-- Windows: install the poppler binaries and add the `bin` folder to your `PATH`
+```bash
+export GEMINI_TRANSCRIPTION_MODEL="gemini-3.5-flash-lite"
+export GEMINI_GRADING_MODEL="gemini-3.5-flash-lite"
+export GEMINI_CHAT_MODEL="gemini-3.5-flash-lite"
+```
 
-Without poppler installed, PDFs with no embedded text (i.e. scanned or photographed answer sheets) will yield no text and no images for the transcriber to work with.
+*Note: Native PDF processing is handled directly by Gemini, removing local binary dependencies such as Poppler.*
+
+---
 
 ## Usage
 
-### Start the backend API
+### 1. Start the FastAPI Backend
 
 ```bash
 cd auto_assessment/auto_assessment
@@ -78,52 +95,68 @@ uvicorn web:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 The backend exposes:
+- `POST /api/assess` (alias: `/evaluate`) — multipart upload for rubric, student work, and optional model answer.
+- `POST /api/regrade` — structured re-evaluation of specific disputed questions with quote verification.
+- `POST /api/chat` (alias: `/chat`) — contextual multi-turn conversation grounded in the active assessment.
+- `GET /api/assessments/recent` — list of recent evaluations stored in the database.
+- `GET /api/assessments/{assessment_id}` — fetch a specific historic evaluation.
 
-- `POST /api/assess` (alias: `/evaluate`) — accepts a multipart form with rubric/question paper and student answer sheet files, returns the graded report
-- `POST /api/chat` (alias: `/chat`) — accepts either a flat `{"message": "..."}` or a `{"messages": [...]}` array, returns the agent's reply
-
-### Run the React frontend
+### 2. Run the React Frontend
 
 In a second terminal:
 
 ```bash
-cd frontend
+cd auto_assessment/frontend
 npm install
 npm run dev
 ```
 
-Open the local Vite URL shown in the terminal. The frontend proxies `/api` requests to `http://127.0.0.1:8000`.
+Open the Vite URL shown in your terminal (typically `http://localhost:5173`). Requests to `/api` are automatically proxied to `http://127.0.0.1:8000`.
 
-### API-only access
+---
 
-Upload a rubric/question paper and a student answer sheet directly:
+## API-Only Access
+
+### Evaluate a Submission
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/assess" \
   -F "rubric_file=@examples/rubric.pdf" \
   -F "answer_file=@examples/student_answer.jpg" \
+  -F "model_answer_text=Problem 1: 2x = 12, x = 6." \
   -F "instructions=Be lenient on spelling, strictly evaluate math steps"
 ```
 
-Send a chat message about a completed assessment:
+### Submit a Structured Regrade Request
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/regrade" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "assessment_id": "YOUR_ASSESSMENT_UUID",
+    "question_id": "Question 1",
+    "claimed_mistake": "You stated I did not show step 2x = 12, but I wrote it on line 2.",
+    "disputed_criterion": "Isolate variable",
+    "evidence_quote": "2x = 12"
+  }'
+```
+
+### Contextual Chat
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/chat" \
   -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "Why did Question 1 lose points?"}]}'
+  -d '{
+    "assessment_id": "YOUR_ASSESSMENT_UUID",
+    "messages": [{"role": "user", "content": "Why did Question 1 lose points?"}]
+  }'
 ```
 
-## Known Limitations
+---
 
-- Grading and chat currently share Groq's daily token quota on the free tier (100k TPD); heavy chat usage after a large grading run can hit rate limits. Chat context is kept compact and capped to the last 8 turns to reduce this, but sustained use may still exhaust the quota.
-- The vision transcription model used for handwritten pages should be verified against your Groq account's available model list — an invalid model ID fails silently (returns empty transcription) rather than raising a visible error, to avoid one bad image derailing the whole grading run.
-- Rubric-defensibility is currently checked by a single audit pass (Agent 4). There is no external human-in-the-loop verification step by design.
+## Key Design & Reliability Features
 
-
-
-## Roadmap
-
-1. Add richer rubric structures with weighted, hierarchical criteria and more granular partial-credit scoring
-2. Add a lightweight automated test suite with fixture answer sheets to catch prompt/model regressions before deployment
-3. Persist assessment history so past runs can be revisited without re-uploading documents
-4. Add per-criterion confidence scoring so low-confidence grades can be flagged for optional human review
+- **Model Answer Bypass**: When an instructor provides an official model answer, generative solution steps are bypassed to ensure evaluation strictly reflects human ground truth while reducing token cost.
+- **Deterministic Invariant Auditing**: Score sums and maximum point bounds are validated in Python code by `AuditAgent` rather than relying solely on LLM self-consistency.
+- **Evidence Quote Verification**: Quoted student evidence is verified against the raw submission text before any regrade score adjustments are accepted.
+- **Persistent Assessment Sessions**: All grading outputs and dispute histories are persisted in SQLite, enabling multi-session review and safe concurrency.

@@ -3,18 +3,13 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./styles.css";
 
-
 const NAV_ITEMS = [
   { id: "upload", label: "Upload", icon: "upload" },
   { id: "results", label: "Score Feed", icon: "score" },
   { id: "chat", label: "Agent Chat", icon: "chat" },
+  { id: "history", label: "History", icon: "history" },
 ];
 
-
-// Single source of truth for every glyph in the app. Nothing renders a raw
-// emoji character anymore -- everything goes through this SVG set so icon
-// weight/stroke/size stay consistent across upload cards, empty states,
-// rubric rows and score badges.
 function Icon({ name, className }) {
   const paths = {
     upload: (
@@ -34,6 +29,12 @@ function Icon({ name, className }) {
         <path d="M4 5h16v11H8l-4 4V5Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
       </>
     ),
+    history: (
+      <>
+        <path d="M12 8v4l3 3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
+      </>
+    ),
     collapse: (
       <>
         <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.6" />
@@ -48,7 +49,6 @@ function Icon({ name, className }) {
         <path d="M13 9l2 3-2 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
       </>
     ),
-    // Replaces the 📄 emoji on the rubric dropzone.
     document: (
       <>
         <path d="M7 3h7l3 3v15H7z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
@@ -56,7 +56,6 @@ function Icon({ name, className }) {
         <path d="M9 12h6M9 15.5h6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
       </>
     ),
-    // Replaces the 📝 emoji on the answer-sheet dropzone.
     note: (
       <>
         <path d="M6 3h9l3 3v15H6z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
@@ -64,20 +63,17 @@ function Icon({ name, className }) {
         <path d="M9 13l2.2 2.2L15 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
       </>
     ),
-    // Replaces the 📊 emoji in the results empty state.
     chartEmpty: (
       <>
         <path d="M4 20V9M11 20V4M18 20v-7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
         <path d="M2 20h20" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
       </>
     ),
-    // Replaces the "✕" close glyph used for file-chip removal.
     close: (
       <>
         <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
       </>
     ),
-    // Replaces the "✓" / "~" / "✕" rubric-status characters.
     check: (
       <>
         <path d="M5 12.5l4.5 4.5L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -93,6 +89,11 @@ function Icon({ name, className }) {
         <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       </>
     ),
+    lightbulb: (
+      <>
+        <path d="M9 18h6M10 21h4M12 2a7 7 0 0 0-7 7c0 2.6 1.4 4.8 3.5 6h7c2.1-1.2 3.5-3.4 3.5-6a7 7 0 0 0-7-7Z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
   };
   return (
     <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
@@ -101,39 +102,21 @@ function Icon({ name, className }) {
   );
 }
 
-
-// Cleans up ugly backend/Groq error strings into something a user can
-// actually read, regardless of the exact wording that came through.
 function parseErrorMessage(status, rawDetail) {
   const text = String(rawDetail || "").trim();
-
-
   if (status === 429 || /rate.?limit/i.test(text)) {
     return "The grading model has hit its usage limit for now. Please wait a few minutes and try again.";
   }
-
-
   const messageMatch = text.match(/'message':\s*'([^']+)'/);
   if (messageMatch) {
     return messageMatch[1];
   }
-
-
   if (text.startsWith("{") || text.startsWith("[")) {
     return "Something went wrong while processing your request. Please try again.";
   }
-
-
   return text || "An unexpected error occurred.";
 }
 
-
-// Single, shared scale for "how good is this score" so badges, rubric
-// rows and stat cards all agree on what counts as good/ok/bad instead of
-// a color being hardcoded to green everywhere.
-//   >= 80%  -> "high"  (green)
-//   >= 50%  -> "mid"   (amber)
-//   otherwise -> "low" (red)
 function getScoreTier(score, max) {
   const safeMax = max || 0;
   if (safeMax <= 0) return "mid";
@@ -143,23 +126,22 @@ function getScoreTier(score, max) {
   return "low";
 }
 
-
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
-
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState("upload");
   const [rubricFile, setRubricFile] = useState(null);
-  // Multiple answer sheets -- one student per file. Single-file uploads
-  // still work exactly as before; 2+ files route to the batch endpoint.
   const [answerFiles, setAnswerFiles] = useState([]);
+  const [modelAnswerFile, setModelAnswerFile] = useState(null);
+  const [modelAnswerText, setModelAnswerText] = useState("");
   const [additionalInstructions, setAdditionalInstructions] = useState("");
   const [loading, setLoading] = useState(false);
   const [isRawMode, setIsRawMode] = useState(false);
   const [copyStatus, setCopyStatus] = useState("Copy JSON");
   const [errorMsg, setErrorMsg] = useState("");
   const [response, setResponse] = useState(null);
+  const [assessmentId, setAssessmentId] = useState(null);
   const [isBatch, setIsBatch] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [hasNewResult, setHasNewResult] = useState(false);
@@ -168,12 +150,13 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const chatWindowRef = useRef(null);
 
+  const [historyList, setHistoryList] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const [regradeOpenFor, setRegradeOpenFor] = useState(null);
   const [dispute, setDispute] = useState(emptyDispute);
   const [regradeLoading, setRegradeLoading] = useState(null);
   const [regradeNotes, setRegradeNotes] = useState({});
-
 
   useEffect(() => {
     if (chatWindowRef.current) {
@@ -181,6 +164,50 @@ export default function App() {
     }
   }, [chatMessages]);
 
+  const loadHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch("/api/assessments/recent");
+      if (!res.ok) return;
+      const data = await res.json();
+      setHistoryList(data.assessments || []);
+    } catch (err) {
+      console.warn("Failed to load history:", err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  const loadAssessment = async (id) => {
+    setErrorMsg("");
+    try {
+      const res = await fetch(`/api/assessments/${id}`);
+      if (!res.ok) {
+        let rawDetail = "";
+        try {
+          const body = await res.json();
+          rawDetail = body.detail || JSON.stringify(body);
+        } catch {
+          rawDetail = await res.text();
+        }
+        throw new Error(rawDetail);
+      }
+      const data = await res.json();
+      setResponse(data);
+      setAssessmentId(data.assessment_id || id);
+      setIsBatch(false);
+      setSelectedStudentId(null);
+      setRegradeNotes({});
+      setChatMessages([]);
+      setActiveTab("results");
+    } catch (err) {
+      setErrorMsg(err.message || "Failed to load historical assessment.");
+    }
+  };
 
   const saveFile = (filename, content, type) => {
     const blob = new Blob([content], { type });
@@ -194,7 +221,6 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-
   const handleCopy = () => {
     const content = JSON.stringify(response, null, 2);
     navigator.clipboard.writeText(content).then(() => {
@@ -203,10 +229,6 @@ export default function App() {
     });
   };
 
-
-  // Appends newly picked answer-sheet files to the existing list instead of
-  // replacing it, and de-dupes by name+size so re-selecting the same file
-  // doesn't create a duplicate entry.
   const handleAddAnswerFiles = (fileList) => {
     const newFiles = Array.from(fileList || []);
     setAnswerFiles((prev) => {
@@ -223,11 +245,9 @@ export default function App() {
     });
   };
 
-
   const removeAnswerFile = (index) => {
     setAnswerFiles((prev) => prev.filter((_, i) => i !== index));
   };
-
 
   const handleAssess = async () => {
     if (!rubricFile && answerFiles.length === 0) {
@@ -237,14 +257,13 @@ export default function App() {
     setErrorMsg("");
     setLoading(true);
 
-
     const useBatch = answerFiles.length > 1;
-
 
     const formData = new FormData();
     if (rubricFile) formData.append("rubric_file", rubricFile);
+    if (modelAnswerFile) formData.append("model_answer_file", modelAnswerFile);
+    if (modelAnswerText.trim()) formData.append("model_answer_text", modelAnswerText.trim());
     if (additionalInstructions.trim()) formData.append("instructions", additionalInstructions.trim());
-
 
     if (useBatch) {
       answerFiles.forEach((f) => formData.append("answer_files", f));
@@ -253,13 +272,11 @@ export default function App() {
       formData.append("answer_file", answerFiles[0]);
     }
 
-
     try {
       const res = await fetch(useBatch ? "/api/assess/batch" : "/api/assess", {
         method: "POST",
         body: formData,
       });
-
 
       if (!res.ok) {
         let rawDetail = "";
@@ -273,9 +290,9 @@ export default function App() {
         return;
       }
 
-
       const data = await res.json();
       setResponse(data);
+      setAssessmentId(data.assessment_id || null);
       setIsBatch(useBatch);
       if (useBatch && data.results) {
         const firstId = Object.keys(data.results)[0] || null;
@@ -286,6 +303,7 @@ export default function App() {
       setRegradeNotes({});
       setHasNewResult(true);
       setActiveTab("results");
+      loadHistory();
     } catch (err) {
       setErrorMsg(err.message || "An error occurred during assessment.");
     } finally {
@@ -293,11 +311,9 @@ export default function App() {
     }
   };
 
-
   const handleSendChat = async (e) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
-
 
     const userMsg = { role: "user", content: chatInput.trim() };
     const updatedMessages = [...chatMessages, userMsg];
@@ -305,14 +321,16 @@ export default function App() {
     setChatInput("");
     setChatLoading(true);
 
-
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: updatedMessages, hasAssessment: !!response }),
+        body: JSON.stringify({
+          assessment_id: assessmentId,
+          messages: updatedMessages,
+          hasAssessment: !!response,
+        }),
       });
-
 
       if (!res.ok) {
         let rawDetail = "";
@@ -329,7 +347,6 @@ export default function App() {
         return;
       }
 
-
       const data = await res.json();
       setChatMessages([
         ...updatedMessages,
@@ -345,22 +362,16 @@ export default function App() {
     }
   };
 
-
-  // Calls the regrade endpoint with a STRUCTURED dispute (specific claimed
-  // mistake, optional criterion + evidence quote) instead of a vague reason,
-  // so the backend is checking a falsifiable claim, not just "please regrade".
-  // Passes student_id when in batch mode so the right student's session is
-  // updated, not just "whichever was graded last".
   const handleRequestRegrade = async (questionId) => {
     if (!dispute.claimed_mistake.trim() || dispute.claimed_mistake.trim().length < 8) return;
     setRegradeLoading(questionId);
-
 
     try {
       const res = await fetch("/api/regrade", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          assessment_id: assessmentId,
           question_id: questionId,
           claimed_mistake: dispute.claimed_mistake.trim(),
           disputed_criterion: dispute.disputed_criterion.trim() || null,
@@ -370,7 +381,6 @@ export default function App() {
       });
       const data = await res.json();
 
-
       if (!res.ok) {
         setRegradeNotes((prev) => ({
           ...prev,
@@ -379,9 +389,6 @@ export default function App() {
         return;
       }
 
-
-      // Replace just this student's report (batch mode) or the whole
-      // response (single mode) with the backend's updated version.
       if (isBatch && selectedStudentId) {
         setResponse((prev) => ({
           ...prev,
@@ -390,7 +397,6 @@ export default function App() {
       } else {
         setResponse(data.report);
       }
-
 
       setRegradeNotes((prev) => ({
         ...prev,
@@ -402,6 +408,7 @@ export default function App() {
       }));
       setRegradeOpenFor(null);
       setDispute(emptyDispute);
+      loadHistory();
     } catch (err) {
       setRegradeNotes((prev) => ({
         ...prev,
@@ -412,11 +419,6 @@ export default function App() {
     }
   };
 
-
-  // Rubric-row status icon now shares the same tier logic as the score
-  // badges, so "pass/partial/fail" always lines up with high/mid/low colors
-  // instead of a fixed ✓/~/✕ glyph set painted the same color regardless
-  // of how close the score actually is to full marks.
   const renderStatusIcon = (score, weight) => {
     const tier = getScoreTier(score, weight);
     if (tier === "high") return <span className="rubric-icon tier-high"><Icon name="check" /></span>;
@@ -424,13 +426,9 @@ export default function App() {
     return <span className="rubric-icon tier-low"><Icon name="cross" /></span>;
   };
 
-
-  // In batch mode, pull the currently selected student's report out of
-  // response.results; otherwise use the single-student response as before.
   const activeReport = isBatch
     ? response?.results?.[selectedStudentId]
     : response;
-
 
   const resultData = activeReport?.result || activeReport?.results || activeReport;
   const questionList = Array.isArray(resultData)
@@ -439,7 +437,6 @@ export default function App() {
     ? Object.values(resultData)
     : [];
 
-
   const getMaxScore = (q) => (q?.max_score ?? 10);
   const totalScore = questionList.reduce((sum, q) => sum + (q?.score || 0), 0);
   const maxTotal = questionList.reduce((sum, q) => sum + getMaxScore(q), 0);
@@ -447,15 +444,13 @@ export default function App() {
   const passCount = questionList.filter((q) => (q?.score || 0) >= getMaxScore(q)).length;
   const overallTier = maxTotal ? getScoreTier(totalScore, maxTotal) : "mid";
 
-
   const studentIds = isBatch && response?.results ? Object.keys(response.results) : [];
-
 
   const goToTab = (id) => {
     setActiveTab(id);
     if (id === "results") setHasNewResult(false);
+    if (id === "history") loadHistory();
   };
-
 
   return (
     <div className="app-shell">
@@ -494,7 +489,6 @@ export default function App() {
           )}
         </div>
 
-
         <nav className="sidebar-nav">
           {NAV_ITEMS.map((item) => (
             <button
@@ -510,7 +504,6 @@ export default function App() {
           ))}
         </nav>
 
-
         <div className="sidebar-footer">
           <div className="status-chip">
             <span className={`status-dot ${response ? "status-dot-ready" : ""}`} />
@@ -518,7 +511,6 @@ export default function App() {
           </div>
         </div>
       </aside>
-
 
       <main className="app-main">
         {activeTab === "upload" && (
@@ -534,7 +526,6 @@ export default function App() {
                 </p>
               </div>
             </header>
-
 
             <div className="upload-grid">
               <div className="dropzone-card">
@@ -556,7 +547,6 @@ export default function App() {
                   </button>
                 )}
               </div>
-
 
               <div className="dropzone-card">
                 <span className="dropzone-label">
@@ -580,7 +570,6 @@ export default function App() {
                   />
                 </label>
 
-
                 {answerFiles.length > 0 && (
                   <ul className="file-chip-list">
                     {answerFiles.map((f, idx) => (
@@ -601,6 +590,30 @@ export default function App() {
               </div>
             </div>
 
+            <div className="field-block">
+              <span className="dropzone-label">Official Model Answer (optional, recommended)</span>
+              <label className="upload-pill">
+                <span className="upload-icon" aria-hidden="true"><Icon name="document" /></span>
+                <span className="upload-text">
+                  {modelAnswerFile ? modelAnswerFile.name : "Attach official answer key — PDF, image, or text"}
+                </span>
+                <input
+                  type="file"
+                  accept="image/*,.pdf,.docx,.txt"
+                  onChange={(e) => setModelAnswerFile(e.target.files?.[0] || null)}
+                />
+              </label>
+              {modelAnswerFile && (
+                <button className="remove-link" onClick={() => setModelAnswerFile(null)}>
+                  Remove model answer
+                </button>
+              )}
+              <textarea
+                placeholder="Or paste the official model answer here. This skips Gemini answer-key generation and saves cost."
+                value={modelAnswerText}
+                onChange={(e) => setModelAnswerText(e.target.value)}
+              />
+            </div>
 
             {answerFiles.length > 1 && (
               <p className="batch-hint">
@@ -609,7 +622,6 @@ export default function App() {
                 every student.
               </p>
             )}
-
 
             <div className="field-block">
               <span className="dropzone-label">Custom grading instructions (optional)</span>
@@ -620,9 +632,7 @@ export default function App() {
               />
             </div>
 
-
             {errorMsg && <p className="error-text">{errorMsg}</p>}
-
 
             <div className="actions">
               <button
@@ -647,7 +657,6 @@ export default function App() {
             </div>
           </section>
         )}
-
 
         {activeTab === "results" && (
           <section className="view">
@@ -677,7 +686,6 @@ export default function App() {
               </div>
             </header>
 
-
             {!response ? (
               <div className="empty-state">
                 <div className="empty-icon" aria-hidden="true"><Icon name="chartEmpty" /></div>
@@ -703,7 +711,6 @@ export default function App() {
                   </div>
                 )}
 
-
                 <div className="stat-row">
                   <div className={`stat-card stat-card-${overallTier}`}>
                     <span className="stat-label">Average score</span>
@@ -723,6 +730,30 @@ export default function App() {
                   </div>
                 </div>
 
+                {activeReport?.strengths?.length > 0 || activeReport?.priority_growth_areas?.length > 0 ? (
+                  <div className="growth-summary-grid">
+                    {activeReport.strengths?.length > 0 && (
+                      <div className="growth-card growth-strengths">
+                        <span className="growth-card-title">Key Strengths Demonstrated</span>
+                        <ul>
+                          {activeReport.strengths.map((str, sIdx) => (
+                            <li key={sIdx}>{str}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {activeReport.priority_growth_areas?.length > 0 && (
+                      <div className="growth-card growth-priorities">
+                        <span className="growth-card-title">Priority Focus Areas for Next Test</span>
+                        <ul>
+                          {activeReport.priority_growth_areas.map((pga, pIdx) => (
+                            <li key={pIdx}>{pga}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
 
                 {isRawMode ? (
                   <pre className="result-json">{JSON.stringify(response, null, 2)}</pre>
@@ -739,22 +770,46 @@ export default function App() {
                       const questionMax = item?.max_score ?? 10;
                       const scoreTier = getScoreTier(questionScore, questionMax);
 
-
                       return (
                         <article className="result-card" key={qid}>
                           <div className="card-meta">
-                            <h3>{item?.question_id || `Question ${idx + 1}`}</h3>
+                            <div>
+                              <h3>{item?.question_id || `Question ${idx + 1}`}</h3>
+                              {item?.concept_tested && (
+                                <span className="concept-tag">{item.concept_tested}</span>
+                              )}
+                            </div>
                             <span className={`badge-pill badge-pill-${scoreTier}`}>
                               {questionScore.toFixed(1)} / {questionMax}
                             </span>
                           </div>
-                          <div className="feedback-box">{item?.feedback || "No feedback provided."}</div>
+
+                          <div className="feedback-box">
+                            {item?.feedback || "No feedback provided."}
+                          </div>
+
+                          {item?.actionable_takeaway && (
+                            <div className="actionable-takeaway-box">
+                              <span className="actionable-title">
+                                <Icon name="lightbulb" /> Next-Time Actionable Rule:
+                              </span>
+                              <p>{item.actionable_takeaway}</p>
+                            </div>
+                          )}
+
                           {item?.criterion_scores?.length > 0 && (
                             <ul className="rubric-list">
                               {item.criterion_scores.map((crit, cIdx) => (
                                 <li key={cIdx}>
                                   {renderStatusIcon(crit.score, crit.weight)}
-                                  <span>{crit.description}</span>
+                                  <div className="criterion-content">
+                                    <span className="criterion-desc">{crit.description}</span>
+                                    {crit.evidence_quote && (
+                                      <span className="criterion-quote">
+                                        Evidence: "{crit.evidence_quote}"
+                                      </span>
+                                    )}
+                                  </div>
                                   <span className={`rubric-score tier-${getScoreTier(crit.score, crit.weight)}`}>
                                     {crit.score}/{crit.weight}
                                   </span>
@@ -762,7 +817,6 @@ export default function App() {
                               ))}
                             </ul>
                           )}
-
 
                           {note && !note.error && (
                             <div className={`regrade-note ${note.changed ? "regrade-note-changed" : ""}`}>
@@ -775,7 +829,6 @@ export default function App() {
                             </div>
                           )}
                           {note?.error && <div className="regrade-note regrade-note-error">{note.error}</div>}
-
 
                           <div className="regrade-block">
                             {!isOpen ? (
@@ -809,7 +862,6 @@ export default function App() {
                                   </label>
                                 )}
 
-
                                 <label className="regrade-field">
                                   <span className="regrade-field-label">
                                     What did the grader get wrong? <em>(required — be specific)</em>
@@ -822,7 +874,6 @@ export default function App() {
                                   />
                                 </label>
 
-
                                 <label className="regrade-field">
                                   <span className="regrade-field-label">
                                     Quote the exact part of your answer that proves it (recommended)
@@ -834,7 +885,6 @@ export default function App() {
                                     onChange={(e) => setDispute((d) => ({ ...d, evidence_quote: e.target.value }))}
                                   />
                                 </label>
-
 
                                 <div className="regrade-actions">
                                   <button
@@ -871,6 +921,73 @@ export default function App() {
           </section>
         )}
 
+        {activeTab === "history" && (
+          <section className="view">
+            <header className="view-header view-header-row">
+              <div>
+                <p className="view-eyebrow">Previous Submissions</p>
+                <h1>Assessment History</h1>
+              </div>
+              <div className="result-actions">
+                <button
+                  className="button button-secondary"
+                  onClick={loadHistory}
+                  disabled={historyLoading}
+                >
+                  {historyLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+            </header>
+
+            {historyList.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-icon" aria-hidden="true"><Icon name="history" /></div>
+                <h3>No saved assessments</h3>
+                <p>Past evaluated submissions will appear here for review and follow-up.</p>
+                <button className="button button-primary" onClick={() => goToTab("upload")}>
+                  Start new assessment
+                </button>
+              </div>
+            ) : (
+              <div className="result-cards">
+                {historyList.map((item) => {
+                  const score = Number(item.score || 0);
+                  const max = Number(item.max_score || 25);
+                  const tier = getScoreTier(score, max);
+                  const dateStr = item.created_at ? new Date(item.created_at).toLocaleString() : "";
+                  const isCurrent = assessmentId === item.assessment_id;
+
+                  return (
+                    <article className="result-card" key={item.assessment_id}>
+                      <div className="card-meta">
+                        <div>
+                          <h3>{item.student_filename || "Assessment"}</h3>
+                          <span style={{ fontSize: "0.78rem", color: "var(--ink-faint)" }}>
+                            {dateStr}
+                          </span>
+                        </div>
+                        <span className={`badge-pill badge-pill-${tier}`}>
+                          {score.toFixed(1)} / {max.toFixed(0)}
+                        </span>
+                      </div>
+                      <div className="feedback-box">
+                        Question paper: <strong>{item.question_paper_filename || "Uploaded Paper"}</strong>
+                      </div>
+                      <div className="actions">
+                        <button
+                          className={`button ${isCurrent ? "button-muted" : "button-primary"} button-sm`}
+                          onClick={() => loadAssessment(item.assessment_id)}
+                        >
+                          {isCurrent ? "Active In View" : "Open Assessment"}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
 
         {activeTab === "chat" && (
           <section className="view view-chat">
@@ -883,7 +1000,6 @@ export default function App() {
                 specific mistake — this chat cannot change scores.
               </p>
             </header>
-
 
             <div className="chat-shell">
               <div className="chat-window" ref={chatWindowRef}>
@@ -919,7 +1035,6 @@ export default function App() {
                 )}
               </div>
 
-
               <form className="chat-form" onSubmit={handleSendChat}>
                 <input
                   value={chatInput}
@@ -943,7 +1058,6 @@ export default function App() {
           </section>
         )}
       </main>
-
 
       <nav className="mobile-tabbar">
         {NAV_ITEMS.map((item) => (

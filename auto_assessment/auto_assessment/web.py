@@ -1,15 +1,19 @@
-import io
-import os
-from typing import List
-from fastapi import FastAPI, Request, HTTPException
+import json
+import sqlite3
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
-from agent import RubricAssessmentAgent, RegradeRequest
+from agent import AssessmentReport, RegradeRequest, RubricAssessmentAgent
 from document_parser import extract_content_from_file
 
-app = FastAPI(title="Multi-Agent Assessment API")
 
+app = FastAPI(title="Auto Assessment API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,219 +23,307 @@ app.add_middleware(
 )
 
 assessment_system = RubricAssessmentAgent()
+DB_PATH = Path(__file__).with_name("assessment_history.db")
+QUESTION_HINTS = ("question", "ques", "qp", "paper", "rubric")
+STUDENT_HINTS = ("student", "answer", "submission", "response", "solution")
 
 
-def _is_qp_field(key: str, filename: str) -> bool:
-    key_l, fname_l = key.lower(), filename.lower()
-    return any(k in key_l or k in fname_l for k in ["ques", "qp", "paper", "rubric", "1"])
+def init_db() -> None:
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS assessments (
+                assessment_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                question_paper_filename TEXT NOT NULL DEFAULT '',
+                student_filename TEXT NOT NULL DEFAULT '',
+                score REAL NOT NULL,
+                max_score REAL NOT NULL,
+                report_json TEXT NOT NULL,
+                context_json TEXT NOT NULL
+            )
+        """)
 
 
-def _reshape_report(report) -> dict:
+def _is_question_file(field_name: str, filename: str) -> bool:
+    field = field_name.lower()
+    name = filename.lower()
+    if any(hint in field for hint in QUESTION_HINTS):
+        return True
+    if any(hint in field for hint in STUDENT_HINTS):
+        return False
+    return any(hint in name for hint in QUESTION_HINTS)
+
+
+def _join_text(base: str, additions: list[str]) -> str:
+    return "\n\n".join(item for item in [base.strip(), *map(str.strip, additions)] if item)
+
+
+def _report_totals(report: AssessmentReport) -> tuple[float, float]:
+    return (
+        sum(item.score for item in report.evaluations),
+        sum(item.max_score for item in report.evaluations),
+    )
+
+
+def _reshape_report(report: AssessmentReport, assessment_id: Optional[str] = None) -> dict:
     report_data = report.model_dump()
-    return {
+    response = {
         "result": report_data["evaluations"],
         "overall_summary": report_data["overall_summary"],
         **report_data,
     }
+    if assessment_id:
+        response["assessment_id"] = assessment_id
+    return response
 
 
-# =====================================================================
-# API ENDPOINTS
-# =====================================================================
+def save_assessment(
+    report: AssessmentReport,
+    context: dict,
+    question_paper_filename: str,
+    student_filename: str,
+) -> str:
+    assessment_id = str(uuid.uuid4())
+    score, max_score = _report_totals(report)
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.execute(
+            """
+            INSERT INTO assessments (
+                assessment_id, created_at, question_paper_filename, student_filename,
+                score, max_score, report_json, context_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                assessment_id,
+                datetime.now(timezone.utc).isoformat(),
+                question_paper_filename,
+                student_filename,
+                score,
+                max_score,
+                report.model_dump_json(),
+                json.dumps(context, default=str),
+            ),
+        )
+    return assessment_id
+
+
+def load_assessment(assessment_id: str) -> AssessmentReport:
+    with sqlite3.connect(DB_PATH) as connection:
+        row = connection.execute(
+            "SELECT report_json, context_json FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+
+    report = AssessmentReport.model_validate_json(row[0])
+    context = json.loads(row[1])
+    context["report"] = report
+    assessment_system.last_context = context
+    assessment_system.conversation_history = []
+    return report
+
+
+def persist_current_report(assessment_id: str) -> None:
+    if not assessment_system.last_context:
+        raise RuntimeError("No assessment context is loaded.")
+    report: AssessmentReport = assessment_system.last_context["report"]
+    score, max_score = _report_totals(report)
+    stored_context = dict(assessment_system.last_context)
+    stored_context["report"] = report.model_dump()
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.execute(
+            """
+            UPDATE assessments
+            SET score = ?, max_score = ?, report_json = ?, context_json = ?
+            WHERE assessment_id = ?
+            """,
+            (score, max_score, report.model_dump_json(), json.dumps(stored_context), assessment_id),
+        )
+
+
+def _parse_uploads(form) -> dict:
+    qp_text = str(form.get("question_paper_text") or form.get("question_paper") or "")
+    rubric_text = str(form.get("rubric_text") or form.get("rubric") or "")
+    student_text = str(form.get("student_answer_text") or form.get("student_text") or "")
+    model_answer_text = str(form.get("model_answer_text") or form.get("model_answer") or "")
+    custom_instructions = str(form.get("custom_instructions") or form.get("instructions") or "")
+
+    qp_images: list[Image.Image] = []
+    student_images: list[Image.Image] = []
+    qp_text_parts: list[str] = []
+    student_text_parts: list[str] = []
+    qp_pdf_bytes: Optional[bytes] = None
+    student_pdf_bytes: Optional[bytes] = None
+    qp_filename = "question_paper"
+    student_filename = "student_submission"
+
+    for field_name in form.keys():
+        for value in form.getlist(field_name):
+            if not (hasattr(value, "filename") and value.filename):
+                continue
+            file_bytes = value.file.read()
+            if not file_bytes:
+                raise HTTPException(status_code=422, detail=f"{value.filename!r} is empty.")
+
+            parsed = extract_content_from_file(value.filename, file_bytes)
+            if parsed.error:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Could not process {value.filename!r}: {parsed.error}",
+                )
+
+            if _is_question_file(field_name, value.filename):
+                qp_filename = parsed.filename
+                qp_text_parts.append(parsed.text)
+                qp_images.extend(parsed.images)
+                if parsed.pdf_bytes:
+                    if qp_pdf_bytes:
+                        raise HTTPException(status_code=422, detail="Use one question-paper PDF per request.")
+                    qp_pdf_bytes = parsed.pdf_bytes
+            else:
+                student_filename = parsed.filename
+                student_text_parts.append(parsed.text)
+                student_images.extend(parsed.images)
+                if parsed.pdf_bytes:
+                    if student_pdf_bytes:
+                        raise HTTPException(status_code=422, detail="Use one student-answer PDF per request.")
+                    student_pdf_bytes = parsed.pdf_bytes
+
+    return {
+        "question_paper_text": _join_text(qp_text, qp_text_parts),
+        "rubric_text": rubric_text,
+        "student_answer_text": _join_text(student_text, student_text_parts),
+        "model_answer_text": model_answer_text,
+        "custom_instructions": custom_instructions,
+        "qp_images": qp_images,
+        "student_images": student_images,
+        "qp_pdf_bytes": qp_pdf_bytes,
+        "student_pdf_bytes": student_pdf_bytes,
+        "qp_pdf_filename": qp_filename,
+        "student_pdf_filename": student_filename,
+        "question_paper_filename": qp_filename,
+        "student_filename": student_filename,
+    }
+
+
+init_db()
+
+
 @app.post("/api/assess")
 @app.post("/evaluate")
 async def assess_submission(request: Request):
-    """
-    Parses uploaded form files (PDF / image / plain text) and text fields
-    regardless of the field names sent by the frontend UI.
-    """
     try:
-        form = await request.form()
+        payload = _parse_uploads(await request.form())
+        if not (payload["question_paper_text"] or payload["qp_images"] or payload["qp_pdf_bytes"]):
+            raise HTTPException(status_code=422, detail="No readable question paper was provided.")
+        if not (payload["student_answer_text"] or payload["student_images"] or payload["student_pdf_bytes"]):
+            raise HTTPException(status_code=422, detail="No readable student answer was provided.")
 
-        qp_text = str(form.get("question_paper_text") or form.get("question_paper") or "")
-        rubric_text = str(form.get("rubric_text") or form.get("rubric") or "")
-        student_text = str(form.get("student_answer_text") or form.get("student_text") or form.get("student_answer") or "")
-        custom_instructions = str(form.get("custom_instructions") or form.get("instructions") or "")
-
-        qp_images: List[Image.Image] = []
-        student_images: List[Image.Image] = []
-        qp_extracted_text: List[str] = []
-        student_extracted_text: List[str] = []
-
-        for key in form.keys():
-            form_fields = form.getlist(key) if hasattr(form, "getlist") else [form[key]]
-            for val in form_fields:
-                if not (hasattr(val, "filename") and val.filename):
-                    continue
-                content = await val.read()
-                if not content:
-                    continue
-
-                try:
-                    text, imgs = extract_content_from_file(val.filename, content)
-                except Exception as parse_err:
-                    print(f"Could not parse file '{val.filename}': {parse_err}")
-                    continue
-
-                if _is_qp_field(key, val.filename):
-                    if text:
-                        qp_extracted_text.append(text)
-                    qp_images.extend(imgs)
-                else:
-                    if text:
-                        student_extracted_text.append(text)
-                    student_images.extend(imgs)
-
-        if qp_extracted_text:
-            qp_text = (qp_text + "\n\n" + "\n\n".join(qp_extracted_text)).strip()
-        if student_extracted_text:
-            student_text = (student_text + "\n\n" + "\n\n".join(student_extracted_text)).strip()
-
-        print(f"Loaded {len(qp_images)} Question Paper image(s) & {len(student_images)} Student Solution image(s). "
-              f"QP text chars={len(qp_text)}, Student text chars={len(student_text)}.")
-
-        report = assessment_system.process_submission(
-            question_paper_text=qp_text,
-            rubric_text=rubric_text,
-            student_answer_text=student_text,
-            qp_images=qp_images,
-            student_images=student_images,
-            custom_instructions=custom_instructions,
+        print(
+            f"[Upload] QP text={len(payload['question_paper_text'])}, QP images={len(payload['qp_images'])}, "
+            f"QP PDF={bool(payload['qp_pdf_bytes'])}; Student text={len(payload['student_answer_text'])}, "
+            f"Student images={len(payload['student_images'])}, Student PDF={bool(payload['student_pdf_bytes'])}"
         )
+        report = assessment_system.process_submission(**{
+            key: value for key, value in payload.items()
+            if key not in {"question_paper_filename", "student_filename"}
+        })
+        assessment_id = save_assessment(
+            report,
+            assessment_system.last_context,
+            payload["question_paper_filename"],
+            payload["student_filename"],
+        )
+        return _reshape_report(report, assessment_id)
+    except HTTPException:
+        raise
+    except ValueError as error:
+        print(f"[Assessment] Validation error: {error}")
+        raise HTTPException(status_code=422, detail=str(error))
+    except Exception as error:
+        print(f"[Assessment] Unexpected error: {error}")
+        raise HTTPException(status_code=500, detail="Assessment processing failed. Check server logs.")
 
-        return _reshape_report(report)
 
-    except Exception as e:
-        print(f"Assessment Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/api/assessments/recent")
+async def recent_assessments():
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT assessment_id, created_at, question_paper_filename, student_filename, score, max_score
+            FROM assessments ORDER BY created_at DESC LIMIT 3
+            """
+        ).fetchall()
+    return {"assessments": [dict(row) for row in rows]}
+
+
+@app.get("/api/assessments/{assessment_id}")
+async def get_assessment(assessment_id: str):
+    report = load_assessment(assessment_id)
+    return _reshape_report(report, assessment_id)
 
 
 @app.post("/api/regrade")
 async def regrade_question(request: Request):
-    """
-    Re-evaluates a single question from the most recent assessment, based on
-    a STRUCTURED dispute rather than a vague "please regrade this".
-
-    Expects JSON:
-    {
-      "question_id": "Question 1",
-      "claimed_mistake": "You said I didn't show the chain rule, but I did.",
-      "disputed_criterion": "Correct use of chain rule",   // optional
-      "evidence_quote": "d/dx[f(g(x))] = f'(g(x)) * g'(x)"  // optional but recommended
-    }
-
-    `claimed_mistake` is required — a vague reason with no specific claim is
-    rejected, since the evaluator needs a falsifiable claim to check, not a
-    generic "be nicer" request.
-
-    Returns the updated single-question evaluation plus the full, reshaped
-    report (same shape as /api/assess) so the frontend can either patch one
-    card in place or just replace `response` wholesale.
-    """
     try:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-
+        body = await request.json()
+        assessment_id = str(body.get("assessment_id") or "").strip()
         question_id = str(body.get("question_id") or "").strip()
         claimed_mistake = str(body.get("claimed_mistake") or body.get("reason") or "").strip()
-        disputed_criterion = body.get("disputed_criterion")
-        evidence_quote = body.get("evidence_quote")
-
+        if not assessment_id:
+            raise HTTPException(status_code=400, detail="assessment_id is required.")
         if not question_id:
             raise HTTPException(status_code=400, detail="question_id is required.")
-        if not claimed_mistake or len(claimed_mistake) < 8:
-            raise HTTPException(
-                status_code=400,
-                detail="claimed_mistake is required and must name a specific error "
-                       "(e.g. 'You said I didn't show step X, but I did in line 3'), "
-                       "not a generic complaint.",
-            )
+        if len(claimed_mistake) < 8:
+            raise HTTPException(status_code=400, detail="Describe a specific grading mistake (at least 8 characters).")
 
+        load_assessment(assessment_id)
         dispute = RegradeRequest(
-            disputed_criterion=str(disputed_criterion).strip() if disputed_criterion else None,
+            disputed_criterion=str(body.get("disputed_criterion") or "").strip() or None,
             claimed_mistake=claimed_mistake,
-            evidence_quote=str(evidence_quote).strip() if evidence_quote else None,
+            evidence_quote=str(body.get("evidence_quote") or "").strip() or None,
         )
-
         result = assessment_system.regrade_question(question_id, dispute)
-
+        persist_current_report(assessment_id)
         return {
             "question": result.question.model_dump(),
             "changed": result.changed,
             "claim_verified": result.claim_verified,
             "explanation": result.explanation,
-            "report": _reshape_report(assessment_system.last_context["report"]),
+            "report": _reshape_report(assessment_system.last_context["report"], assessment_id),
         }
-
     except HTTPException:
         raise
-    except (RuntimeError, ValueError) as e:
-        print(f"Regrade Error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"Regrade Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except (ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=400, detail=str(error))
 
 
 @app.post("/api/chat")
 @app.post("/chat")
 async def chat_with_agent(request: Request):
-    """
-    Accepts either:
-      - {"message": "..."} / {"user_message": "..."} / {"prompt": "..."} / {"query": "..."} /
-        {"text": "..."} / {"content": "..."}   (flat string, legacy support)
-      - {"messages": [{"role": "user", "content": "..."}, ...]}  (array shape sent by App.jsx)
-    """
     try:
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-
-        user_msg = (
-            body.get("message") or
-            body.get("user_message") or
-            body.get("prompt") or
-            body.get("query") or
-            body.get("text") or
-            body.get("content") or
-            ""
-        ).strip()
-
-        if not user_msg:
-            messages = body.get("messages")
-            if isinstance(messages, list):
-                for msg in reversed(messages):
-                    if isinstance(msg, dict) and msg.get("role") == "user" and msg.get("content"):
-                        user_msg = str(msg["content"]).strip()
-                        break
-
-        if not user_msg:
-            raise HTTPException(status_code=400, detail="No message body provided in chat payload.")
-
-        reply = assessment_system.verify_and_chat(user_msg)
-
-        return {
-            "answer": reply,
-            "response": reply,
-            "reply": reply,
-            "message": reply,
-            "text": reply,
-        }
-
+        body = await request.json()
+        assessment_id = str(body.get("assessment_id") or "").strip()
+        if not assessment_id:
+            raise HTTPException(status_code=400, detail="assessment_id is required.")
+        load_assessment(assessment_id)
+        message = str(body.get("message") or body.get("user_message") or body.get("prompt") or "").strip()
+        if not message and isinstance(body.get("messages"), list):
+            for item in reversed(body["messages"]):
+                if isinstance(item, dict) and item.get("role") == "user":
+                    message = str(item.get("content") or "").strip()
+                    break
+        if not message:
+            raise HTTPException(status_code=400, detail="No chat message was provided.")
+        reply = assessment_system.verify_and_chat(message)
+        return {"answer": reply, "response": reply, "reply": reply}
     except HTTPException:
         raise
-    except RuntimeError as e:
-        msg = str(e)
-        print(f"Chat Processing Error: {msg}")
-        if msg.startswith("RATE_LIMITED"):
-            raise HTTPException(status_code=429, detail=msg.replace("RATE_LIMITED: ", ""))
-        raise HTTPException(status_code=500, detail=msg)
-    except Exception as e:
-        print(f"Chat Processing Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as error:
+        print(f"[Chat] Error: {error}")
+        raise HTTPException(status_code=500, detail="Chat processing failed. Check server logs.")
 
 
 if __name__ == "__main__":

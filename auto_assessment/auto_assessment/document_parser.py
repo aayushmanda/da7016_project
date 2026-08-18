@@ -1,53 +1,49 @@
 import io
-from typing import List, Tuple
+from dataclasses import dataclass, field
+from typing import Optional
+
 from PIL import Image
-import pypdf
 
-def extract_content_from_file(filename: str, file_bytes: bytes) -> Tuple[str, List[Image.Image]]:
-    """
-    Parses files into text strings and PIL Images for visual evaluation.
-    """
-    filename_lower = filename.lower()
-    text_content = ""
-    images: List[Image.Image] = []
 
-    # 1. Handle Direct Image Uploads
-    if filename_lower.endswith((".png", ".jpg", ".jpeg", ".webp")):
+@dataclass
+class ParsedDocument:
+    filename: str
+    text: str = ""
+    images: list[Image.Image] = field(default_factory=list)
+    pdf_bytes: Optional[bytes] = None
+    mime_type: Optional[str] = None
+    error: Optional[str] = None
+
+
+def extract_content_from_file(filename: str, file_bytes: bytes) -> ParsedDocument:
+    """Validate an upload and preserve PDFs intact for Gemini document processing."""
+    result = ParsedDocument(filename=filename)
+    lower_name = filename.lower()
+
+    if not file_bytes:
+        result.error = "The uploaded file is empty."
+        return result
+
+    if lower_name.endswith(".pdf"):
+        if len(file_bytes) > 50 * 1024 * 1024:
+            result.error = "The PDF exceeds the 50 MB processing limit."
+            return result
+        result.pdf_bytes = file_bytes
+        result.mime_type = "application/pdf"
+        return result
+
+    if lower_name.endswith((".png", ".jpg", ".jpeg", ".webp")):
         try:
-            img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-            images.append(img)
-            text_content = f"[Attached Image File: {filename}]"
-        except Exception as e:
-            text_content = f"Error opening image {filename}: {str(e)}"
+            result.images.append(Image.open(io.BytesIO(file_bytes)).convert("RGB"))
+        except Exception as exc:
+            result.error = f"Could not open the image: {exc}"
+        return result
 
-    # 2. Handle PDF Uploads
-    elif filename_lower.endswith(".pdf"):
-        try:
-            reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-            pdf_text = []
-            for i, page in enumerate(reader.pages):
-                extracted = page.extract_text() or ""
-                if extracted.strip():
-                    pdf_text.append(f"--- Page {i+1} ---\n{extracted}")
-            
-            text_content = "\n".join(pdf_text) if pdf_text else f"[PDF contains no embedded text, using vision parser for {filename}]"
-            
-            # If pdf2image is installed, convert PDF pages into PIL images for handwriting evaluation
-            try:
-                from pdf2image import convert_from_bytes
-                pdf_images = convert_from_bytes(file_bytes)
-                images.extend(pdf_images)
-            except ImportError:
-                pass
+    if lower_name.endswith((".txt", ".md", ".csv")):
+        result.text = file_bytes.decode("utf-8", errors="ignore").strip()
+        if not result.text:
+            result.error = "The uploaded text file contains no readable content."
+        return result
 
-        except Exception as e:
-            text_content = f"Error parsing PDF {filename}: {str(e)}"
-
-    # 3. Plain Text / Markdown Files
-    else:
-        try:
-            text_content = file_bytes.decode("utf-8", errors="ignore")
-        except Exception as e:
-            text_content = f"Error reading text file {filename}: {str(e)}"
-
-    return text_content, images
+    result.error = "Unsupported file type. Upload a PDF, image, TXT, or Markdown file."
+    return result

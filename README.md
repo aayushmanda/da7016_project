@@ -4,6 +4,8 @@ A multi-agent, rubric-based grading system that evaluates student answer sheets 
 
 Upload a rubric/question paper and a student's answer sheet (PDF, image, or text), and the system transcribes handwritten pages, generates a master answer key, grades each question against its rubric criteria, audits its own scoring for consistency, and lets you follow up with a conversational agent about the results.
 
+<video controls src="run.mov" title="View"></video>
+
 ## How It Works
 
 The grading pipeline runs as four cooperating agents rather than a single prompt:

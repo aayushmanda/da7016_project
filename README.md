@@ -4,8 +4,7 @@ A multi-agent, evidence-anchored rubric grading system that evaluates handwritte
 
 Upload a rubric/question paper and a student's answer sheet (PDF, image, or text), with an optional official model answer. The system transcribes handwritten pages, generates or aligns with a reference solution, evaluates each rubric criterion with extracted student evidence quotes, enforces deterministic score audits in Python, and provides both structured regrading and interactive follow-up chat.
 
-<video src="https://github.com/user-attachments/assets/af0ab536-f000-4899-8e4f-44b010bf782e
-" controls="controls" width="100%">
+<video src="https://github.com/user-attachments/assets/af0ab536-f000-4899-8e4f-44b010bf782e" controls="controls" width="100%">
 </video>
 
 ---
@@ -16,12 +15,12 @@ The grading pipeline runs as cooperating specialized agents with strict Pydantic
 
 | Agent / Stage | Role | Execution & Model |
 |---|---|---|
-| **Transcriber** | Converts handwritten/scanned PDFs and image uploads into clean, structured Markdown | `gemini-3.5-flash-lite` (Multimodal) |
-| **Solver** | Generates a step-by-step master answer key (bypassed if official answer key is provided) | `gemini-3.5-flash-lite` |
-| **Evaluator** | Evaluates student work against criteria, extracts verbatim evidence quotes, and generates actionable rules | `gemini-3.5-flash-lite` (Structured JSON) |
+| **Transcriber** | Converts handwritten/scanned PDFs and image uploads into clean, structured Markdown | `gemini-2.5-flash` (Multimodal) |
+| **Solver** | Generates a step-by-step master answer key (bypassed if official answer key is provided) | `gemini-2.5-flash` |
+| **Evaluator** | Evaluates student work against criteria, extracts verbatim evidence quotes, and generates actionable rules | `gemini-2.5-flash` (Structured JSON) |
 | **Auditor** | Deterministically audits arithmetic totals and score bounds in Python code | Deterministic Invariant Validator |
-| **Regrade Agent** | Audits falsifiable student disputes by verifying quoted evidence against raw submissions | `gemini-3.5-flash-lite` |
-| **Chat Agent** | Contextual multi-turn reasoning agent answering questions about marks and feedback | `gemini-3.5-flash-lite` |
+| **Regrade Agent** | Audits falsifiable student disputes by verifying quoted evidence against raw submissions | `gemini-2.5-flash` |
+| **Chat Agent** | Contextual multi-turn reasoning agent answering questions about marks and feedback | `gemini-2.5-flash` |
 
 Grading runs automatically with deterministic guardrails. Feedback is prescriptive, actionable, and rubric-defensible so students understand exactly where points were deducted and what to write on their next attempt.
 
@@ -30,18 +29,25 @@ Grading runs automatically with deterministic guardrails. Feedback is prescripti
 ## Repository Structure
 
 ```
-auto_assessment/
+da7016_project/
 ├── auto_assessment/
-│   ├── agent.py               # Multi-agent pipeline: Transcriber, Solver, Evaluator, Auditor, Regrade
-│   ├── web.py                 # FastAPI backend exposing /api/assess, /api/regrade, /api/chat, and /api/assessments
-│   ├── document_parser.py     # Ingestion & validation for raw PDFs, images, and text uploads
-│   └── assessment_history.db  # SQLite database storing versioned assessment sessions
-└── frontend/
-    ├── src/
-    │   ├── App.jsx            # Upload, Score Feed, History, and Agent Chat views
-    │   └── styles.css         # Full-width fluid layout & design tokens
-    ├── index.html
-    └── package.json
+│   ├── auto_assessment/
+│   │   ├── agent.py               # Multi-agent pipeline: Transcriber, Solver, Evaluator, Auditor, Regrade
+│   │   ├── web.py                 # FastAPI backend exposing /api/assess, /api/regrade, /api/chat, and /api/assessments
+│   │   ├── document_parser.py     # Document validation & direct PDF/image ingestion
+│   │   ├── assessment_history.db  # SQLite database storing versioned assessment sessions
+│   │   └── __init__.py
+│   └── frontend/
+│       ├── src/
+│       │   ├── App.jsx            # Single-page UI: Upload, Score Feed, History, and Agent Chat views
+│       │   └── styles.css         # Full-width fluid responsive layout & Gemini design tokens
+│       ├── index.html
+│       ├── package.json
+│       └── vite.config.js
+├── images/                        # Demo assets & screenshots
+├── requirements.txt               # Backend Python dependencies
+├── LICENSE
+└── README.md
 ```
 
 ---
@@ -55,7 +61,7 @@ The web UI is a fluid, single-page application featuring four views accessible f
 - **History** — review and reload past evaluations instantly from SQLite storage without re-uploading documents.
 - **Agent Chat** — ask follow-up questions about the assessment (e.g., *"Why did Q1 lose points?"*) with an interface that dynamically expands when the sidebar is collapsed.
 
-![Upload view](images/upload.png) 
+![Upload view](images/upload.png)
 ![Score Feed view](images/score_feed.png)
 ![Agent Chat view](images/agent_chat.png)
 
@@ -76,9 +82,9 @@ export GEMINI_API_KEY="your-gemini-api-key"
 *(Optional model configuration overrides:)*
 
 ```bash
-export GEMINI_TRANSCRIPTION_MODEL="gemini-3.5-flash-lite"
-export GEMINI_GRADING_MODEL="gemini-3.5-flash-lite"
-export GEMINI_CHAT_MODEL="gemini-3.5-flash-lite"
+export GEMINI_TRANSCRIPTION_MODEL="gemini-2.5-flash"
+export GEMINI_GRADING_MODEL="gemini-2.5-flash"
+export GEMINI_CHAT_MODEL="gemini-2.5-flash"
 ```
 
 *Note: Native PDF processing is handled directly by Gemini, removing local binary dependencies such as Poppler.*

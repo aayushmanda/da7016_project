@@ -4,8 +4,8 @@ A multi-agent, evidence-anchored rubric grading system that evaluates handwritte
 
 Upload a rubric/question paper and a student's answer sheet (PDF, image, or text), with an optional official model answer. The system transcribes handwritten pages, generates or aligns with a reference solution, evaluates each rubric criterion with extracted student evidence quotes, enforces deterministic score audits in Python, and provides both structured regrading and interactive follow-up chat.
 
-<video width="100%" controls>
-  <source src="run.mp4" type="video/mp4">
+<video src="https://github.com/user-attachments/assets/af0ab536-f000-4899-8e4f-44b010bf782e
+" controls="controls" width="100%">
 </video>
 
 ---

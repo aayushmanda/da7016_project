@@ -61,9 +61,9 @@ The web UI is a fluid, single-page application featuring four views accessible f
 - **History** — review and reload past evaluations instantly from SQLite storage without re-uploading documents.
 - **Agent Chat** — ask follow-up questions about the assessment (e.g., *"Why did Q1 lose points?"*) with an interface that dynamically expands when the sidebar is collapsed.
 
-![Upload view](images/upload.png)
+<!-- ![Upload view](images/upload.png)
 ![Score Feed view](images/score_feed.png)
-![Agent Chat view](images/agent_chat.png)
+![Agent Chat view](images/agent_chat.png) -->
 
 ---
 

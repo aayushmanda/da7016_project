@@ -64,6 +64,13 @@ function Icon({ name, className }) {
         <line x1="16" y1="17" x2="8" y2="17" stroke="currentColor" strokeWidth="2" />
       </>
     ),
+    slider: (
+    <>
+        <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="2" />
+        <path d="M9 3v18" stroke="currentColor" strokeWidth="2" />
+        <path d="M15 15l-3-3 3-3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
     models: (
       <>
         <rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" strokeWidth="1.7" />
@@ -560,7 +567,7 @@ const [agentModels, setAgentModels] = useState([]);
                 aria-label="Collapse sidebar"
                 title="Collapse sidebar"
               >
-                <Icon name="collapse" />
+                <Icon name="slider" />
               </button>
             </>
           ) : (

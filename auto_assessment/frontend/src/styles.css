@@ -1221,3 +1221,214 @@ textarea:focus-visible,
   background-color: #f0fdf4;
   color: #16a34a;
 }
+
+
+/* --- Chat Container Layout --- */
+.chat-window {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+  background: #f8fafc;
+  border-radius: var(--radius-lg);
+  overflow-y: auto;
+}
+
+.chat-message {
+  display: flex;
+  width: 100%;
+}
+
+/* Right Orientation (User Messages) */
+.chat-user {
+  justify-content: flex-end;
+}
+
+/* Left Orientation (Agent Messages) */
+.chat-agent {
+  justify-content: flex-start;
+}
+
+/* --- Base Bubble Styling --- */
+.chat-bubble {
+  max-width: 75%;
+  padding: 14px 18px;
+  border-radius: 18px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  line-height: 1.5;
+}
+
+.chat-bubble-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.chat-role {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* --- User Bubble (Vibrant Blue Accent) --- */
+.chat-user .chat-bubble {
+  background: linear-gradient(135deg, #1a73e8, #1558b0);
+  color: #ffffff;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-user .chat-role {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.chat-user .chat-markdown {
+  color: #ffffff;
+}
+
+/* --- Agent Bubble (Clean White with Soft Blue Highlights) --- */
+.chat-agent .chat-bubble {
+  background: #ffffff;
+  color: #1e2937;
+  border: 1px solid #e2e8f0;
+  border-top-left-radius: 4px;
+}
+
+.chat-agent .chat-role {
+  color: #1a73e8;
+}
+
+/* Listen Button Styling */
+.listen-btn {
+  background: #e8f0fe;
+  color: #1a73e8;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.listen-btn:hover {
+  background: #d3e3fc;
+}
+
+/* ==================================================================
+   Gemini-Inspired Chat Styling (Light, Soft Blue Accent)
+================================================================== */
+.chat-message {
+  display: flex;
+  width: 100%;
+  margin-bottom: 12px;
+  animation: fade-in 0.18s ease;
+}
+
+.chat-user {
+  justify-content: flex-end;
+}
+
+.chat-agent {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  max-width: min(85%, 720px);
+  padding: 14px 18px;
+  border-radius: var(--radius-lg);
+  line-height: 1.6;
+  font-size: 0.92rem;
+}
+
+.chat-bubble-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.chat-role {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* --- User Message: Soft Gemini Blue Pill --- */
+.chat-user .chat-bubble {
+  background: var(--blue-tint);
+  border: 1px solid rgba(26, 115, 232, 0.2);
+  border-bottom-right-radius: 4px;
+}
+
+.chat-user .chat-role {
+  color: var(--blue-dark);
+}
+
+.chat-user .chat-markdown,
+.chat-user .chat-markdown p {
+  color: var(--ink);
+}
+
+.chat-user .chat-markdown strong {
+  color: #000000;
+  font-weight: 600;
+}
+
+/* --- Agent Message: Clean White Surface --- */
+.chat-agent .chat-bubble {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-top-left-radius: 4px;
+  box-shadow: 0 1px 3px rgba(60, 64, 67, 0.06);
+}
+
+.chat-agent .chat-role {
+  color: var(--blue);
+}
+
+.chat-agent .chat-markdown,
+.chat-agent .chat-markdown p {
+  color: var(--ink);
+}
+
+.chat-agent .chat-markdown strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+/* --- Speaker Icon Button Alignment --- */
+.listen-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.listen-icon-btn svg {
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+
+.listen-icon-btn:hover {
+  background: var(--surface-muted);
+  color: var(--blue);
+}
+
+.listen-icon-btn.is-speaking {
+  background: var(--red-tint);
+  color: var(--red);
+}

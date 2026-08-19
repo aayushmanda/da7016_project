@@ -1124,21 +1124,26 @@ const speakText = (text) => {
                   </div>
                 ) : (
                   chatMessages.map((msg, index) => (
-                    <div className="chat-bubble">
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span className="chat-role">{msg.role === "user" ? "You" : "Agent"}</span>
-                        {msg.role !== "user" && (
-                          <button 
-                            type="button" 
-                            className="button button-ghost button-sm" 
-                            onClick={() => speakText(msg.content)}
-                          >
-                            {isSpeaking ? "Stop" : "Listen"}
-                          </button>
-                        )}
-                      </div>
-                      <div className="chat-markdown">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    <div 
+                      key={index} 
+                      className={`chat-message ${msg.role === "user" ? "chat-user" : "chat-agent"}`}
+                    >
+                      <div className="chat-bubble">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span className="chat-role">{msg.role === "user" ? "You" : "Agent"}</span>
+                          {msg.role !== "user" && (
+                            <button class="listen-icon-btn" aria-label="Listen to response" title="Listen">
+                              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                                <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                        <div className="chat-markdown">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                        </div>
                       </div>
                     </div>
                   ))

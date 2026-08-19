@@ -146,7 +146,7 @@ function getScoreTier(score, max) {
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
 
 export default function App() {
-const [agentModels, setAgentModels] = useState([]);
+const [agentModels, setAgentModels] = useState(AGENT_MODELS);
   const [modelsLoading, setModelsLoading] = useState(false);
 
   const loadPipelineModels = async () => {
@@ -155,14 +155,18 @@ const [agentModels, setAgentModels] = useState([]);
       const res = await fetch("/api/models");
       if (res.ok) {
         const data = await res.json();
-        setAgentModels(data.agents || []);
+        if (data.agents && data.agents.length > 0) {
+          setAgentModels(data.agents);
+        }
       }
     } catch (err) {
-      console.warn("Failed to load dynamic model metadata:", err);
+      console.warn("Failed to load dynamic model metadata, using fallback:", err);
+      setAgentModels(AGENT_MODELS);
     } finally {
       setModelsLoading(false);
     }
   };
+
 
 
   // Voice Synthesis & Recognition State

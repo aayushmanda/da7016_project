@@ -239,6 +239,25 @@ const speakText = (text) => {
   window.speechSynthesis.speak(utterance);
 };
 
+const [speakingIndex, setSpeakingIndex] = useState(null);
+
+const handleSpeak = (text, index) => {
+  if (speakingIndex === index) {
+    window.speechSynthesis.cancel();
+    setSpeakingIndex(null);
+    return;
+  }
+
+  window.speechSynthesis.cancel();
+  
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.onend = () => setSpeakingIndex(null);
+  utterance.onerror = () => setSpeakingIndex(null);
+
+  setSpeakingIndex(index);
+  window.speechSynthesis.speak(utterance);
+};
+
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState("upload");
   const [rubricFile, setRubricFile] = useState(null);
@@ -1129,11 +1148,16 @@ const speakText = (text) => {
                       className={`chat-message ${msg.role === "user" ? "chat-user" : "chat-agent"}`}
                     >
                       <div className="chat-bubble">
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div className="chat-bubble-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span className="chat-role">{msg.role === "user" ? "You" : "Agent"}</span>
                           {msg.role !== "user" && (
-                            <button class="listen-icon-btn" aria-label="Listen to response" title="Listen">
-                              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <button 
+                              className={`listen-icon-btn ${speakingIndex === index ? "is-speaking" : ""}`}
+                              aria-label="Listen to response" 
+                              title="Listen"
+                              onClick={() => handleSpeak(msg.content, index)}
+                            >
+                              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                 <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
                                 <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
                                 <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>

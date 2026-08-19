@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from fastapi import WebSocket, WebSocketDisconnect
+from google.genai.types import LiveConnectConfig, Modality
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +13,18 @@ from PIL import Image
 
 from agent import AssessmentReport, RegradeRequest, RubricAssessmentAgent
 from document_parser import extract_content_from_file
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel
 
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    assessment_id: Optional[str] = None
+    messages: List[ChatMessage]
 
 app = FastAPI(title="Auto Assessment API")
 app.add_middleware(
@@ -299,6 +312,76 @@ async def assess_submission(request: Request):
     except Exception as error:
         print(f"[Assessment] Unexpected error: {error}")
         raise HTTPException(status_code=500, detail="Assessment processing failed. Check server logs.")
+
+
+
+@app.websocket("/ws/voice/{assessment_id}")
+async def voice_chat_endpoint(websocket: WebSocket, assessment_id: str):
+    """
+    Bidirectional audio streaming WebSocket proxy connecting the browser
+    directly to Gemini's Multimodal Live API.
+    """
+    await websocket.accept()
+    
+    # Retrieve rubric context from SQLite
+    record = get_assessment(assessment_id)
+    context_str = ""
+    if record:
+        context_str = (
+            f"Total Score: {record.get('total_score')}/{record.get('max_score')} ({record.get('percentage')}%)\n"
+            f"Key Strengths: {record.get('key_strengths')}\n"
+            f"Focus Areas: {record.get('priority_focus')}\n"
+            f"Questions: {record.get('questions')}"
+        )
+
+    system_instruction = (
+        "You are an encouraging, friendly grading tutor speaking directly to a student. "
+        "Keep your spoken answers concise, empathetic, and directly grounded in their assessment results:\n"
+        f"{context_str}"
+    )
+
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+    try:
+        async with client.aio.live.connect(
+            model="gemini-2.0-flash-exp",
+            config=LiveConnectConfig(
+                response_modalities=[Modality.AUDIO],
+                system_instruction=system_instruction
+            )
+        ) as session:
+            async def receive_from_browser():
+                try:
+                    while True:
+                        data = await websocket.receive_bytes()
+                        await session.send_realtime_input(
+                            audio={"data": data, "mime_type": "audio/pcm;rate=16000"}
+                        )
+                except WebSocketDisconnect:
+                    logger.info("Browser disconnected from voice WebSocket.")
+                except Exception as e:
+                    logger.warning(f"Voice receive error: {e}")
+
+            async def send_to_browser():
+                try:
+                    async for response in session.receive():
+                        if response.server_content and response.server_content.model_turn:
+                            for part in response.server_content.model_turn.parts:
+                                if part.inline_data and part.inline_data.data:
+                                    await websocket.send_bytes(part.inline_data.data)
+                except Exception as e:
+                    logger.warning(f"Voice send error: {e}")
+
+            await asyncio.gather(receive_from_browser(), send_to_browser())
+
+    except WebSocketDisconnect:
+        logger.info("Voice session closed cleanly.")
+    except Exception as e:
+        logger.error(f"Live voice connection error: {e}", exc_info=True)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.get("/api/assessments/recent")

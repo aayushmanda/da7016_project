@@ -11,83 +11,57 @@ const NAV_ITEMS = [
   { id: "models", label: "Models", icon: "models" },
 ];
 
+const AGENT_ICON_MAP = {
+  "Transcriber": "transcriber",
+  "Solver": "solver",
+  "Evaluator": "evaluator",
+  "Auditor": "auditor",
+  "Regrade Agent": "regrade",
+  "Chat Agent": "chat",
+};
+
+const AGENT_MODELS = [
+  { agent: "Transcriber", role: "Multimodal OCR & Document Parsing", model: "gemini-2.5-flash", type: "Vision", desc: "Converts handwritten and typed PDFs/images into clean, structured Markdown." },
+  { agent: "Solver", role: "Master Reference Solution Key", model: "gemini-2.5-flash", type: "Reasoning", desc: "Generates step-by-step master answer key when no official key is provided." },
+  { agent: "Evaluator", role: "Evidence-Anchored Grading & Rules", model: "gemini-2.5-flash", type: "Structured JSON", desc: "Evaluates student work against criteria with verbatim evidence quotes and next-time rules." },
+  { agent: "Auditor", role: "Score Invariant & Arithmetic Validation", model: "Python Deterministic", type: "Code Guardrail", desc: "Validates score arithmetic, criterion sums, and bounding invariants in pure Python code." },
+  { agent: "Regrade Agent", role: "Dispute & Evidence Verification", model: "gemini-2.5-flash", type: "Auditing", desc: "Audits falsifiable student disputes by verifying quoted evidence against raw submissions." },
+  { agent: "Chat Agent", role: "Contextual Dialogue & Voice Tutoring", model: "gemini-2.5-flash", type: "Interactive", desc: "Multi-turn tutoring agent answering student queries grounded in grading context." }
+];
+
 function Icon({ name, className }) {
   const paths = {
     upload: (
       <>
-        <path d="M12 16V4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-        <path d="M7 9l5-5 5 5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" strokeWidth="2" />
+        <polyline points="17 8 12 3 7 8" stroke="currentColor" strokeWidth="2" />
+        <line x1="12" y1="3" x2="12" y2="15" stroke="currentColor" strokeWidth="2" />
       </>
     ),
     score: (
       <>
-        <path d="M4 19V10M12 19V4M20 19v-7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-      </>
-    ),
-    chat: (
-      <>
-        <path d="M4 5h16v11H8l-4 4V5Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <line x1="18" y1="20" x2="18" y2="10" stroke="currentColor" strokeWidth="2" />
+        <line x1="12" y1="20" x2="12" y2="4" stroke="currentColor" strokeWidth="2" />
+        <line x1="6" y1="20" x2="6" y2="14" stroke="currentColor" strokeWidth="2" />
       </>
     ),
     history: (
       <>
-        <path d="M12 8v4l3 3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
+        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+        <polyline points="12 6 12 12 16 14" stroke="currentColor" strokeWidth="2" />
       </>
     ),
-    collapse: (
+    chat: (
       <>
-        <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.6" />
-        <path d="M9 4v16" stroke="currentColor" strokeWidth="1.6" />
-        <path d="M14 9l-2 3 2 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      </>
-    ),
-    expand: (
-      <>
-        <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.6" />
-        <path d="M9 4v16" stroke="currentColor" strokeWidth="1.6" />
-        <path d="M13 9l2 3-2 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" />
       </>
     ),
     document: (
       <>
-        <path d="M7 3h7l3 3v15H7z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-        <path d="M14 3v4h4" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-        <path d="M9 12h6M9 15.5h6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </>
-    ),
-    note: (
-      <>
-        <path d="M6 3h9l3 3v15H6z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-        <path d="M15 3v4h4" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-        <path d="M9 13l2.2 2.2L15 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      </>
-    ),
-    chartEmpty: (
-      <>
-        <path d="M4 20V9M11 20V4M18 20v-7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-        <path d="M2 20h20" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </>
-    ),
-    close: (
-      <>
-        <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      </>
-    ),
-    check: (
-      <>
-        <path d="M5 12.5l4.5 4.5L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      </>
-    ),
-    partial: (
-      <>
-        <path d="M4 12c2-3 4-3 6 0s4 3 6 0 4-3 4-3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      </>
-    ),
-    cross: (
-      <>
-        <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="2" />
+        <polyline points="14 2 14 8 20 8" stroke="currentColor" strokeWidth="2" />
+        <line x1="16" y1="13" x2="8" y2="13" stroke="currentColor" strokeWidth="2" />
+        <line x1="16" y1="17" x2="8" y2="17" stroke="currentColor" strokeWidth="2" />
       </>
     ),
     models: (
@@ -97,15 +71,43 @@ function Icon({ name, className }) {
         <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
       </>
     ),
-    lightbulb: (
+    transcriber: (
       <>
-        <path d="M9 18h6M10 21h4M12 2a7 7 0 0 0-7 7c0 2.6 1.4 4.8 3.5 6h7c2.1-1.2 3.5-3.4 3.5-6a7 7 0 0 0-7-7Z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M4 7V4h3M17 4h3v3M4 17v3h3M20 17v3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M8 12h8M8 9h5M8 15h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </>
+    ),
+    solver: (
+      <>
+        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+        <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.7" />
+      </>
+    ),
+    evaluator: (
+      <>
+        <path d="M9 11l3 3L22 4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      </>
+    ),
+    auditor: (
+      <>
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    regrade: (
+      <>
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <circle cx="11.5" cy="14.5" r="2.5" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M13.3 16.3L16 19" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
       </>
     ),
   };
+
   return (
     <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
-      {paths[name]}
+      {paths[name] || paths.models}
     </svg>
   );
 }
@@ -136,16 +138,25 @@ function getScoreTier(score, max) {
 
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
 
-const AGENT_MODELS = [
-  { agent: "Transcriber", role: "Multimodal OCR & Parsing", model: "gemini-2.5-flash", type: "Vision", desc: "Transcribes handwritten and typed PDFs/images into clean, structured Markdown." },
-  { agent: "Solver", role: "Master Reference Solution", model: "gemini-2.5-flash", type: "Reasoning", desc: "Generates step-by-step master answer key when no official key is provided." },
-  { agent: "Evaluator", role: "Criterion Grading & Quotes", model: "gemini-2.5-flash", type: "Structured JSON", desc: "Evaluates student work against criteria with verbatim evidence quotes and next-time rules." },
-  { agent: "Auditor", role: "Deterministic Guardrail", model: "Python Deterministic", type: "Code Guardrail", desc: "Validates score arithmetic, criterion sums, and bounding invariants in Python." },
-  { agent: "Regrade Agent", role: "Dispute Quote Verification", model: "gemini-2.5-flash", type: "Auditing", desc: "Audits student disputes by verifying quoted evidence against raw submissions." },
-  { agent: "Chat Agent", role: "Contextual Dialogue", model: "gemini-2.5-flash", type: "Interactive", desc: "Multi-turn tutoring agent answering student queries grounded in grading context." }
-];
-
 export default function App() {
+const [agentModels, setAgentModels] = useState([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+
+  const loadPipelineModels = async () => {
+    setModelsLoading(true);
+    try {
+      const res = await fetch("/api/models");
+      if (res.ok) {
+        const data = await res.json();
+        setAgentModels(data.agents || []);
+      }
+    } catch (err) {
+      console.warn("Failed to load dynamic model metadata:", err);
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+
 
   // Voice Synthesis & Recognition State
   const [isListening, setIsListening] = useState(false);
@@ -174,6 +185,7 @@ export default function App() {
 
       recognitionRef.current = recognition;
     }
+    loadPipelineModels();
   }, []);
 
   const toggleListening = () => {
@@ -765,7 +777,7 @@ export default function App() {
 
             {!response ? (
               <div className="empty-state">
-                <div className="empty-icon" aria-hidden="true"><Icon name="chartEmpty" /></div>
+                <div className="empty-icon" aria-hidden="true"><Icon name="score" /></div>
                 <h3>No assessment yet</h3>
                 <p>Upload a rubric and answer sheet to generate your first score feed.</p>
                 <button className="button button-primary" onClick={() => goToTab("upload")}>
@@ -1149,29 +1161,38 @@ export default function App() {
             </header>
 
             <div className="models-tab-grid">
-              {AGENT_MODELS.map((item, idx) => (
-                <div key={idx} className="model-spec-card">
-                  <div className="model-spec-header">
-                    <div className="model-spec-title-wrap">
-                      <h3 className="model-spec-name">{item.agent}</h3>
-                      <span className="model-spec-role">{item.role}</span>
+              {agentModels.map((item, idx) => {
+                const iconKey = AGENT_ICON_MAP[item.agent] || "models";
+
+                return (
+                  <div key={idx} className="model-spec-card">
+                    <div className="model-spec-header">
+                      <div className="model-spec-title-wrap" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <span className="model-agent-icon" style={{ color: "var(--brand-primary, #3b82f6)", display: "flex" }}>
+                          <Icon name={iconKey} />
+                        </span>
+                        <div>
+                          <h3 className="model-spec-name">{item.agent}</h3>
+                          <span className="model-spec-role">{item.role}</span>
+                        </div>
+                      </div>
+                      <span className={`model-pill-badge ${item.model?.includes("gemini") ? "badge-gemini" : "badge-python"}`}>
+                        {item.type}
+                      </span>
                     </div>
-                    <span className={`model-pill-badge ${item.model.includes('gemini') ? 'badge-gemini' : 'badge-python'}`}>
-                      {item.type}
-                    </span>
+                    <p className="model-spec-desc">{item.desc}</p>
+                    <div className="model-spec-footer">
+                      <span className="model-label">Engine / Checkpoint:</span>
+                      <code className="model-code-tag">{item.model}</code>
+                    </div>
                   </div>
-                  <p className="model-spec-desc">{item.desc}</p>
-                  <div className="model-spec-footer">
-                    <span className="model-label">Engine / Checkpoint:</span>
-                    <code className="model-code-tag">{item.model}</code>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         )}
 
-      </main>
+        </main>
 
       <nav className="mobile-tabbar">
         {NAV_ITEMS.map((item) => (

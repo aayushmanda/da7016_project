@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { id: "results", label: "Score Feed", icon: "score" },
   { id: "chat", label: "Agent Chat", icon: "chat" },
   { id: "history", label: "History", icon: "history" },
+  { id: "models", label: "Models", icon: "models" },
 ];
 
 function Icon({ name, className }) {
@@ -89,6 +90,13 @@ function Icon({ name, className }) {
         <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       </>
     ),
+    models: (
+      <>
+        <rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" strokeWidth="1.7" />
+        <rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      </>
+    ),
     lightbulb: (
       <>
         <path d="M9 18h6M10 21h4M12 2a7 7 0 0 0-7 7c0 2.6 1.4 4.8 3.5 6h7c2.1-1.2 3.5-3.4 3.5-6a7 7 0 0 0-7-7Z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
@@ -128,7 +136,76 @@ function getScoreTier(score, max) {
 
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
 
+const AGENT_MODELS = [
+  { agent: "Transcriber", role: "Multimodal OCR & Parsing", model: "gemini-2.5-flash", type: "Vision", desc: "Transcribes handwritten and typed PDFs/images into clean, structured Markdown." },
+  { agent: "Solver", role: "Master Reference Solution", model: "gemini-2.5-flash", type: "Reasoning", desc: "Generates step-by-step master answer key when no official key is provided." },
+  { agent: "Evaluator", role: "Criterion Grading & Quotes", model: "gemini-2.5-flash", type: "Structured JSON", desc: "Evaluates student work against criteria with verbatim evidence quotes and next-time rules." },
+  { agent: "Auditor", role: "Deterministic Guardrail", model: "Python Deterministic", type: "Code Guardrail", desc: "Validates score arithmetic, criterion sums, and bounding invariants in Python." },
+  { agent: "Regrade Agent", role: "Dispute Quote Verification", model: "gemini-2.5-flash", type: "Auditing", desc: "Audits student disputes by verifying quoted evidence against raw submissions." },
+  { agent: "Chat Agent", role: "Contextual Dialogue", model: "gemini-2.5-flash", type: "Interactive", desc: "Multi-turn tutoring agent answering student queries grounded in grading context." }
+];
+
 export default function App() {
+
+  // Voice Synthesis & Recognition State
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const recognitionRef = useRef(null);
+
+  // Initialize Web Speech Recognition
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => setIsListening(true);
+      recognition.onend = () => setIsListening(false);
+      recognition.onerror = () => setIsListening(false);
+
+      recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        if (transcript) {
+          setChatInput(transcript);
+        }
+      };
+
+      recognitionRef.current = recognition;
+    }
+  }, []);
+
+  const toggleListening = () => {
+    if (!recognitionRef.current) {
+      alert("Voice speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.");
+      return;
+    }
+    if (isListening) {
+      recognitionRef.current.stop();
+    } else {
+      recognitionRef.current.start();
+    }
+  };
+
+  const speakText = (text) => {
+    if (!window.speechSynthesis) return;
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+    // Clean markdown symbols for natural speech
+    const cleanText = text.replace(/[*#_`\[\]()]/g, '');
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    window.speechSynthesis.speak(utterance);
+  };
+
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState("upload");
   const [rubricFile, setRubricFile] = useState(null);
@@ -1057,6 +1134,43 @@ export default function App() {
             </div>
           </section>
         )}
+      
+        {/* TAB 5: MODELS ARCHITECTURE */}
+        {activeTab === "models" && (
+          <section className="view">
+            <header className="view-header">
+              <div>
+                <p className="view-eyebrow">Pipeline Architecture</p>
+                <h1>Active Agent Models</h1>
+                <p className="view-subtitle">
+                  Inspect the specialized models, reasoning modalities, and deterministic guardrails powering each stage.
+                </p>
+              </div>
+            </header>
+
+            <div className="models-tab-grid">
+              {AGENT_MODELS.map((item, idx) => (
+                <div key={idx} className="model-spec-card">
+                  <div className="model-spec-header">
+                    <div className="model-spec-title-wrap">
+                      <h3 className="model-spec-name">{item.agent}</h3>
+                      <span className="model-spec-role">{item.role}</span>
+                    </div>
+                    <span className={`model-pill-badge ${item.model.includes('gemini') ? 'badge-gemini' : 'badge-python'}`}>
+                      {item.type}
+                    </span>
+                  </div>
+                  <p className="model-spec-desc">{item.desc}</p>
+                  <div className="model-spec-footer">
+                    <span className="model-label">Engine / Checkpoint:</span>
+                    <code className="model-code-tag">{item.model}</code>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
       </main>
 
       <nav className="mobile-tabbar">

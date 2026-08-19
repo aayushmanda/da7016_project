@@ -1,10 +1,6 @@
-from history import (
-    init_db,
-    save_assessment,
-    list_recent_assessments,
-    get_assessment,
-    update_chat_history
-)
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("auto_assessment.web")
 import json
 import os
 import sqlite3
@@ -18,11 +14,14 @@ from google.genai.types import LiveConnectConfig, Modality
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-
+import asyncio
 from agent import AssessmentReport, RegradeRequest, RubricAssessmentAgent
 from document_parser import extract_content_from_file
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
+from google import genai
+from google.genai import types
+from google.genai.types import LiveConnectConfig, Modality
 
 
 
@@ -323,90 +322,6 @@ async def assess_submission(request: Request):
 
 
 
-@app.websocket("/ws/voice/{assessment_id}")
-async def voice_chat_endpoint(websocket: WebSocket, assessment_id: str):
-    """
-    Bidirectional audio streaming WebSocket proxy connecting the browser
-    directly to Gemini's Multimodal Live API.
-    """
-    await websocket.accept()
-
-    # Fallback to latest assessment if requested
-    if assessment_id == "latest":
-        recent = list_recent_assessments()
-        if asyncio.iscoroutine(recent) or hasattr(recent, "__await__"):
-            recent = await recent
-        if recent and len(recent) > 0:
-            assessment_id = recent[0].get("id")
-            record = get_assessment(assessment_id)
-            if asyncio.iscoroutine(record) or hasattr(record, "__await__"):
-                record = await record
-    
-    
-    # Retrieve rubric context from SQLite
-    # Handle both async and sync get_assessment
-    record = get_assessment(assessment_id)
-    if asyncio.iscoroutine(record) or hasattr(record, "__await__"):
-        record = await record
-    context_str = ""
-    if record:
-        context_str = (
-            f"Total Score: {record.get('total_score')}/{record.get('max_score')} ({record.get('percentage')}%)\n"
-            f"Key Strengths: {record.get('key_strengths')}\n"
-            f"Focus Areas: {record.get('priority_focus')}\n"
-            f"Questions: {record.get('questions')}"
-        )
-
-    system_instruction = (
-        "You are an encouraging, friendly grading tutor speaking directly to a student. "
-        "Keep your spoken answers concise, empathetic, and directly grounded in their assessment results:\n"
-        f"{context_str}"
-    )
-
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-    try:
-        async with client.aio.live.connect(
-            model="gemini-2.0-flash-exp",
-            config=LiveConnectConfig(
-                response_modalities=[Modality.AUDIO],
-                system_instruction=system_instruction
-            )
-        ) as session:
-            async def receive_from_browser():
-                try:
-                    while True:
-                        data = await websocket.receive_bytes()
-                        await session.send_realtime_input(
-                            audio={"data": data, "mime_type": "audio/pcm;rate=16000"}
-                        )
-                except WebSocketDisconnect:
-                    logger.info("Browser disconnected from voice WebSocket.")
-                except Exception as e:
-                    logger.warning(f"Voice receive error: {e}")
-
-            async def send_to_browser():
-                try:
-                    async for response in session.receive():
-                        if response.server_content and response.server_content.model_turn:
-                            for part in response.server_content.model_turn.parts:
-                                if part.inline_data and part.inline_data.data:
-                                    await websocket.send_bytes(part.inline_data.data)
-                except Exception as e:
-                    logger.warning(f"Voice send error: {e}")
-
-            await asyncio.gather(receive_from_browser(), send_to_browser())
-
-    except WebSocketDisconnect:
-        logger.info("Voice session closed cleanly.")
-    except Exception as e:
-        logger.error(f"Live voice connection error: {e}", exc_info=True)
-        try:
-            await websocket.close()
-        except Exception:
-            pass
-
-
 @app.get("/api/assessments/recent")
 async def recent_assessments():
     with sqlite3.connect(DB_PATH) as connection:
@@ -495,8 +410,6 @@ async def chat_stream_with_agent(request: ChatRequest):
     context_str = ""
     if request.assessment_id:
         record = get_assessment(request.assessment_id)
-    if asyncio.iscoroutine(record) or hasattr(record, "__await__"):
-        record = await record
         if record:
             context_str = (
                 f"Active Assessment Context:\n"
@@ -534,3 +447,28 @@ async def chat_stream_with_agent(request: ChatRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("web:app", host="0.0.0.0", port=8000, reload=True)
+class TTSRequest(BaseModel):
+    text: str
+
+@app.post("/api/voice/synthesize")
+async def synthesize_voice(request: TTSRequest):
+    """
+    Synthesizes natural speech audio on the backend using Google Gemini Audio / gTTS.
+    Returns playable audio/mp3 stream directly to the frontend.
+    """
+    clean_text = re.sub(r'[*#_`\[\]()]', '', request.text).strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Empty text provided")
+
+    # Try backend generation
+    try:
+        from gtts import gTTS
+        import io
+        mp3_fp = io.BytesIO()
+        tts = gTTS(text=clean_text[:500], lang='en', slow=False)
+        tts.write_to_fp(mp3_fp)
+        mp3_fp.seek(0)
+        return StreamingResponse(mp3_fp, media_type="audio/mpeg")
+    except Exception as e:
+        logger.error(f"TTS generation error: {e}")
+        raise HTTPException(status_code=500, detail="Voice synthesis failed")

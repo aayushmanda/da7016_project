@@ -51,6 +51,12 @@ function Icon({ name, className }) {
         <polyline points="12 6 12 12 16 14" stroke="currentColor" strokeWidth="2" />
       </>
     ),
+    note: (
+      <>
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        <polyline points="14 2 14 8 20 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </>
+    ),
     chat: (
       <>
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="2" />
@@ -175,126 +181,64 @@ const [agentModels, setAgentModels] = useState(AGENT_MODELS);
   };
 
 
+// Voice Synthesis & Recognition State
+const [isListening, setIsListening] = useState(false);
+const [isSpeaking, setIsSpeaking] = useState(false);
+const recognitionRef = useRef(null);
 
-// WebSocket Multimodal Live Voice State & Refs
-  const [isVoiceActive, setIsVoiceActive] = useState(false);
-  const wsRef = useRef(null);
-  const audioContextRef = useRef(null);
-  const mediaStreamRef = useRef(null);
-  const processorRef = useRef(null);
+// Initialize Web Speech Recognition
+useEffect(() => {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SpeechRecognition) {
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
 
-  // Convert Float32 mic audio to 16-bit PCM for Gemini
-  const convertFloat32ToInt16 = (buffer) => {
-    let l = buffer.length;
-    const buf = new Int16Array(l);
-    while (l--) {
-      const s = Math.max(-1, Math.min(1, buffer[l]));
-      buf[l] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-    }
-    return buf.buffer;
-  };
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => setIsListening(false);
 
-  // Play incoming 24kHz PCM audio chunks from Gemini
-  const playAudioChunk = (arrayBuffer) => {
-    if (!audioContextRef.current) return;
-    try {
-      const int16Array = new Int16Array(arrayBuffer);
-      const float32Array = new Float32Array(int16Array.length);
-      for (let i = 0; i < int16Array.length; i++) {
-        float32Array[i] = int16Array[i] / 32768.0;
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      if (transcript) {
+        setChatInput(transcript);
       }
+    };
 
-      const audioBuffer = audioContextRef.current.createBuffer(1, float32Array.length, 24000);
-      audioBuffer.getChannelData(0).set(float32Array);
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContextRef.current.destination);
-      source.start();
-    } catch (err) {
-      console.error("Audio playback error:", err);
-    }
-  };
+    recognitionRef.current = recognition;
+  }
+}, []);
 
-  const toggleLiveVoice = async () => {
-    // 1. Stop active stream if already running
-    if (isVoiceActive) {
-      if (wsRef.current) wsRef.current.close();
-      if (processorRef.current) processorRef.current.disconnect();
-      if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach((t) => t.stop());
-      if (audioContextRef.current) audioContextRef.current.close();
-      setIsVoiceActive(false);
-      return;
-    }
+const toggleListening = () => {
+  if (!recognitionRef.current) {
+    alert("Voice speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.");
+    return;
+  }
+  if (isListening) {
+    recognitionRef.current.stop();
+  } else {
+    recognitionRef.current.start();
+  }
+};
 
-    try {
-      // 2. Initialize AudioContext directly inside click handler to satisfy browser autoplay policies
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-      if (audioCtx.state === "suspended") {
-        await audioCtx.resume();
-      }
-      audioContextRef.current = audioCtx;
+const speakText = (text) => {
+  if (!window.speechSynthesis) return;
+  if (isSpeaking) {
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+    return;
+  }
+  const cleanText = text.replace(/[*#_`\[\]()]/g, '');
+  const utterance = new SpeechSynthesisUtterance(cleanText);
+  utterance.rate = 1.0;
+  utterance.pitch = 1.0;
+  utterance.onstart = () => setIsSpeaking(true);
+  utterance.onend = () => setIsSpeaking(false);
+  utterance.onerror = () => setIsSpeaking(false);
+  window.speechSynthesis.speak(utterance);
+};
 
-      // 3. Fallback to 'latest' if assessmentId is not set yet
-      const targetId = assessmentId || "latest";
-      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      
-      // If dev server port differs (e.g. Vite on 5173, FastAPI on 8000), update localhost host below if needed
-      const host = window.location.port === "5173" ? "127.0.0.1:8000" : window.location.host;
-      const wsUrl = `${wsProtocol}//${host}/ws/voice/${targetId}`;
-      const ws = new WebSocket(wsUrl);
-      ws.binaryType = "arraybuffer";
-      wsRef.current = ws;
-
-      ws.onopen = async () => {
-        setIsVoiceActive(true);
-
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
-          });
-          mediaStreamRef.current = stream;
-
-          const source = audioCtx.createMediaStreamSource(stream);
-          const processor = audioCtx.createScriptProcessor(2048, 1, 1);
-          processorRef.current = processor;
-
-          processor.onaudioprocess = (e) => {
-            if (ws.readyState === WebSocket.OPEN) {
-              const inputData = e.inputBuffer.getChannelData(0);
-              const pcm16Buffer = convertFloat32ToInt16(inputData);
-              ws.send(pcm16Buffer);
-            }
-          };
-
-          source.connect(processor);
-          processor.connect(audioCtx.destination);
-        } catch (micErr) {
-          alert(`Microphone permission error: ${micErr.message}`);
-          ws.close();
-        }
-      };
-
-      ws.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer) {
-          playAudioChunk(event.data);
-        }
-      };
-
-      ws.onerror = (err) => {
-        console.error("Voice WebSocket Error:", err);
-        setIsVoiceActive(false);
-      };
-
-      ws.onclose = () => {
-        setIsVoiceActive(false);
-      };
-
-    } catch (err) {
-      alert(`Could not start voice session: ${err.message}`);
-      setIsVoiceActive(false);
-    }
-  };
-  
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState("upload");
   const [rubricFile, setRubricFile] = useState(null);
@@ -1180,12 +1124,21 @@ const [agentModels, setAgentModels] = useState(AGENT_MODELS);
                   </div>
                 ) : (
                   chatMessages.map((msg, index) => (
-                    <div key={index} className={`chat-message ${msg.role === "user" ? "chat-user" : "chat-agent"}`}>
-                      <div className="chat-bubble">
+                    <div className="chat-bubble">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span className="chat-role">{msg.role === "user" ? "You" : "Agent"}</span>
-                        <div className="chat-markdown">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                        </div>
+                        {msg.role !== "user" && (
+                          <button 
+                            type="button" 
+                            className="button button-ghost button-sm" 
+                            onClick={() => speakText(msg.content)}
+                          >
+                            {isSpeaking ? "Stop" : "Listen"}
+                          </button>
+                        )}
+                      </div>
+                      <div className="chat-markdown">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                       </div>
                     </div>
                   ))
@@ -1210,9 +1163,9 @@ const [agentModels, setAgentModels] = useState(AGENT_MODELS);
                 />
                 <button
                   type="button"
-                  className={`chat-mic-btn ${isVoiceActive ? "chat-mic-active" : ""}`}
-                  onClick={toggleLiveVoice}
-                  title={isVoiceActive ? "Stop Voice Chat" : "Start Live Voice Chat"}
+                  className={`chat-mic-btn ${isListening ? "chat-mic-active" : ""}`}
+                  onClick={toggleListening}
+                  title={isListening ? "Stop Listening" : "Start Voice Input"}
                   aria-label="Microphone">
                   <Icon name="mic" />
                 </button>

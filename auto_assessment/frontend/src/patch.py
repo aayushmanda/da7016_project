@@ -1,42 +1,97 @@
 import os
+import re
 
-WEB_PY_PATH = "/workspaces/da7016_project/auto_assessment/auto_assessment/web.py"
+APP_JSX_PATH = "/workspaces/da7016_project/auto_assessment/frontend/src/App.jsx"
 
-def fix_history_imports():
-    if not os.path.exists(WEB_PY_PATH):
-        print(f"[-] Could not find {WEB_PY_PATH}")
+CLEAN_SPEAK_FUNCTION = """  const fallbackBrowserSpeech = (cleanText) => {
+    if (!window.speechSynthesis) {
+      setIsSpeaking(false);
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.rate = 1.0;
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const speakText = async (text) => {
+    if (!text) return;
+    const cleanText = text.replace(/[*#_`\\[\\]()]/g, "").trim();
+    if (!cleanText) return;
+
+    if (isSpeaking) {
+      if (window.currentAudio) {
+        window.currentAudio.pause();
+        window.currentAudio = null;
+      }
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      setIsSpeaking(false);
+      return;
+    }
+
+    setIsSpeaking(true);
+
+    try {
+      const res = await fetch("/api/voice/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: cleanText.slice(0, 400) }),
+      });
+
+      if (res.ok) {
+        const blob = await res.blob();
+        const audioUrl = URL.createObjectURL(blob);
+        const audio = new Audio(audioUrl);
+        window.currentAudio = audio;
+        audio.onended = () => {
+          setIsSpeaking(false);
+          URL.revokeObjectURL(audioUrl);
+        };
+        audio.onerror = () => {
+          setIsSpeaking(false);
+          fallbackBrowserSpeech(cleanText);
+        };
+        audio.play().catch(() => {
+          fallbackBrowserSpeech(cleanText);
+        });
+        return;
+      }
+    } catch (err) {
+      console.warn("Backend TTS fallback:", err);
+    }
+
+    fallbackBrowserSpeech(cleanText);
+  };"""
+
+def fix_babel_syntax_error():
+    if not os.path.exists(APP_JSX_PATH):
+        print(f"[-] Could not find {APP_JSX_PATH}")
         return
 
-    with open(WEB_PY_PATH, "r", encoding="utf-8") as f:
+    with open(APP_JSX_PATH, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Check if history imports exist
-    import_snippet = """from history import (
-    init_db,
-    save_assessment,
-    list_recent_assessments,
-    get_assessment,
-    update_chat_history
-)"""
+    # Match and replace speakText and fallbackBrowserSpeech
+    pattern = re.compile(
+        r"(?:const fallbackBrowserSpeech = [\s\S]*?^\s*\};\s*)?(?:const speakText = (?:async )?\([\s\S]*?^\s*\};)",
+        re.MULTILINE
+    )
 
-    # If list_recent_assessments is missing from history import, fix it
-    if "list_recent_assessments" not in content.split("def voice_chat_endpoint")[0]:
-        if "from history import" in content:
-            # Replace existing from history import line
-            content = re.sub(
-                r"from history import [^\n]+",
-                import_snippet,
-                content
-            )
-        else:
-            content = import_snippet + "\n" + content
-        print("[+] Fixed list_recent_assessments import at top of web.py.")
+    if pattern.search(content):
+        content = pattern.sub(CLEAN_SPEAK_FUNCTION.strip(), content)
+        print("[+] Replaced speakText with strict JS syntax.")
+    else:
+        # Direct string replacement fallback
+        content = content.replace("await audio.play();", "audio.play().catch(() => { fallbackBrowserSpeech(cleanText); });")
 
-    with open(WEB_PY_PATH, "w", encoding="utf-8") as f:
+    with open(APP_JSX_PATH, "w", encoding="utf-8") as f:
         f.write(content)
 
-    print(f"[✓] Saved updated imports in {WEB_PY_PATH}")
+    print(f"[✓] Syntax error permanently resolved in {APP_JSX_PATH}")
 
 if __name__ == "__main__":
-    import re
-    fix_history_imports()
+    fix_babel_syntax_error()

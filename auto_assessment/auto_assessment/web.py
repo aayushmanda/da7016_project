@@ -1,4 +1,12 @@
+from history import (
+    init_db,
+    save_assessment,
+    list_recent_assessments,
+    get_assessment,
+    update_chat_history
+)
 import json
+import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -322,9 +330,24 @@ async def voice_chat_endpoint(websocket: WebSocket, assessment_id: str):
     directly to Gemini's Multimodal Live API.
     """
     await websocket.accept()
+
+    # Fallback to latest assessment if requested
+    if assessment_id == "latest":
+        recent = list_recent_assessments()
+        if asyncio.iscoroutine(recent) or hasattr(recent, "__await__"):
+            recent = await recent
+        if recent and len(recent) > 0:
+            assessment_id = recent[0].get("id")
+            record = get_assessment(assessment_id)
+            if asyncio.iscoroutine(record) or hasattr(record, "__await__"):
+                record = await record
+    
     
     # Retrieve rubric context from SQLite
+    # Handle both async and sync get_assessment
     record = get_assessment(assessment_id)
+    if asyncio.iscoroutine(record) or hasattr(record, "__await__"):
+        record = await record
     context_str = ""
     if record:
         context_str = (
@@ -472,6 +495,8 @@ async def chat_stream_with_agent(request: ChatRequest):
     context_str = ""
     if request.assessment_id:
         record = get_assessment(request.assessment_id)
+    if asyncio.iscoroutine(record) or hasattr(record, "__await__"):
+        record = await record
         if record:
             context_str = (
                 f"Active Assessment Context:\n"

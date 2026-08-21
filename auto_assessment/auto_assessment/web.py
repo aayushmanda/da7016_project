@@ -428,10 +428,6 @@ async def chat_with_agent(request: Request):
 
 @app.post("/api/chat/stream")
 async def chat_stream_with_agent(request: ChatRequest):
-    """
-    Stream the Agent Chat response token-by-token.
-    """
-
     if not request.assessment_id:
         raise HTTPException(
             status_code=400,
@@ -445,16 +441,8 @@ async def chat_stream_with_agent(request: ChatRequest):
         )
 
     try:
-        # IMPORTANT:
-        # Do NOT call get_assessment() here.
-        # It is a FastAPI async route.
-        #
-        # load_assessment() directly loads the assessment and
-        # restores assessment_system.last_context.
-        load_assessment(request.assessment_id)
 
-        # Use exactly the same grounded assessment context
-        # as the normal chat agent.
+        load_assessment(request.assessment_id)
         context = assessment_system._chat_context()
 
         conversation = "\n".join(
@@ -477,10 +465,9 @@ async def chat_stream_with_agent(request: ChatRequest):
 
         def token_generator():
             try:
-                stream = client.models.generate_content_stream(
-                    model=chat_model,
-                    contents=[prompt],
-                )
+                chat = client.chats.create(model=CHAT_MODEL)
+
+                stream = chat.send_message_stream(prompt)
 
                 for chunk in stream:
                     text = getattr(chunk, "text", None)

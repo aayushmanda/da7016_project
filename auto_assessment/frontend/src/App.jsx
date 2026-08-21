@@ -160,26 +160,38 @@ function getScoreTier(score, max) {
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
 
 export default function App() {
-const [agentModels, setAgentModels] = useState(AGENT_MODELS);
-  const [modelsLoading, setModelsLoading] = useState(false);
+const [agentModels, setAgentModels] = useState([]);
+const [modelsLoading, setModelsLoading] = useState(false);
+const [modelsError, setModelsError] = useState("");
 
-  const loadPipelineModels = async () => {
-    setModelsLoading(true);
-    try {
-      const res = await fetch("/api/models");
-      if (res.ok) {
-        const data = await res.json();
-        if (data.agents && data.agents.length > 0) {
-          setAgentModels(data.agents);
-        }
-      }
-    } catch (err) {
-      console.warn("Failed to load dynamic model metadata, using fallback:", err);
-      setAgentModels(AGENT_MODELS);
-    } finally {
-      setModelsLoading(false);
+const loadPipelineModels = async () => {
+  setModelsLoading(true);
+  setModelsError("");
+
+  try {
+    const res = await fetch("/api/models");
+
+    if (!res.ok) {
+      throw new Error(`Failed to load models (${res.status})`);
     }
-  };
+
+    const data = await res.json();
+
+    if (!Array.isArray(data.agents)) {
+      throw new Error("Invalid model configuration returned by server.");
+    }
+
+    setAgentModels(data.agents);
+  } catch (err) {
+    console.error("Failed to load pipeline models:", err);
+    setAgentModels([]);
+    setModelsError(
+      err.message || "Could not load the active pipeline configuration."
+    );
+  } finally {
+    setModelsLoading(false);
+  }
+};
 
 
 // Voice Synthesis & Recognition State
@@ -578,8 +590,18 @@ const handleSpeak = (text, index) => {
 
   const goToTab = (id) => {
     setActiveTab(id);
-    if (id === "results") setHasNewResult(false);
-    if (id === "history") loadHistory();
+
+    if (id === "results") {
+      setHasNewResult(false);
+    }
+
+    if (id === "history") {
+      loadHistory();
+    }
+
+    if (id === "models") {
+      loadPipelineModels();
+    }
   };
 
   return (

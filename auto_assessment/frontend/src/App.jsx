@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./styles.css";
 
+
 const NAV_ITEMS = [
   { id: "upload", label: "Upload", icon: "upload" },
   { id: "results", label: "Score Feed", icon: "score" },

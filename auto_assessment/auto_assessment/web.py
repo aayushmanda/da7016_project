@@ -2,6 +2,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auto_assessment.web")
 import json
+import re
 import os
 import sqlite3
 import uuid
@@ -9,20 +10,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from fastapi import WebSocket, WebSocketDisconnect
-from google.genai.types import LiveConnectConfig, Modality
+
+from fastapi.responses import StreamingResponse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 import asyncio
-from agent import AssessmentReport, RegradeRequest, RubricAssessmentAgent
 from document_parser import extract_content_from_file
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from google.genai.types import LiveConnectConfig, Modality
-
+from agent import (
+    AssessmentReport,
+    RegradeRequest,
+    RubricAssessmentAgent,
+    TRANSCRIPTION_MODEL,
+    GRADING_MODEL,
+    CHAT_MODEL,
+)
 
 
 class ChatMessage(BaseModel):
@@ -232,58 +240,75 @@ init_db()
 
 @app.get("/api/models")
 def get_pipeline_models():
-    """Returns dynamic model inspection metadata across all pipeline agents."""
-    transcription_model = os.getenv("GEMINI_TRANSCRIPTION_MODEL", "gemini-2.5-flash")
-    grading_model = os.getenv("GEMINI_GRADING_MODEL", "gemini-2.5-flash")
-    chat_model = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+    """Return the exact runtime configuration of the assessment pipeline."""
 
     return {
         "agents": [
             {
                 "agent": "Transcriber",
-                "role": "Multimodal OCR & Document Parsing",
-                "model": transcription_model,
+                "role": "Multimodal Document Transcription",
+                "model": TRANSCRIPTION_MODEL,
                 "type": "Vision",
-                "desc": "Converts handwritten and typed PDFs/images into clean, structured Markdown."
+                "desc": (
+                    "Transcribes handwritten and typed PDFs/images "
+                    "into structured Markdown while preserving questions, "
+                    "mathematical notation, tables, and page boundaries."
+                ),
             },
             {
                 "agent": "Solver",
-                "role": "Master Reference Solution Key",
-                "model": grading_model,
+                "role": "Reference Answer Generation",
+                "model": GRADING_MODEL,
                 "type": "Reasoning",
-                "desc": "Generates step-by-step master answer key when no official key is provided."
+                "desc": (
+                    "Generates a step-by-step reference answer key when "
+                    "an official model answer is not provided."
+                ),
             },
             {
                 "agent": "Evaluator",
-                "role": "Evidence-Anchored Grading & Rules",
-                "model": grading_model,
-                "type": "Structured JSON",
-                "desc": "Evaluates student work against criteria with verbatim evidence quotes and next-time rules."
+                "role": "Evidence-Anchored Rubric Grading",
+                "model": GRADING_MODEL,
+                "type": "Structured Output",
+                "desc": (
+                    "Grades each answer against the rubric, assigns "
+                    "criterion-level scores, cites student evidence, "
+                    "and produces actionable feedback."
+                ),
             },
             {
                 "agent": "Auditor",
-                "role": "Score Invariant & Arithmetic Validation",
-                "model": "Python Deterministic",
-                "type": "Code Guardrail",
-                "desc": "Validates score arithmetic, criterion sums, and bounding invariants in pure Python code."
+                "role": "Deterministic Score Validation",
+                "model": "Python",
+                "type": "Deterministic Guardrail",
+                "desc": (
+                    "Checks score bounds, duplicate question IDs, "
+                    "criterion totals, and arithmetic invariants "
+                    "without using an LLM."
+                ),
             },
             {
                 "agent": "Regrade Agent",
-                "role": "Dispute & Evidence Verification",
-                "model": grading_model,
-                "type": "Auditing",
-                "desc": "Audits falsifiable student disputes by verifying quoted evidence against raw submissions."
+                "role": "Evidence-Based Re-evaluation",
+                "model": GRADING_MODEL,
+                "type": "Verification",
+                "desc": (
+                    "Re-evaluates specific grading disputes and verifies "
+                    "student evidence before allowing score changes."
+                ),
             },
             {
                 "agent": "Chat Agent",
-                "role": "Contextual Dialogue & Voice Tutoring",
-                "model": chat_model,
+                "role": "Assessment-Grounded Tutoring",
+                "model": CHAT_MODEL,
                 "type": "Interactive",
-                "desc": "Multi-turn tutoring agent answering student queries grounded in grading context."
-            }
+                "desc": (
+                    "Answers multi-turn student questions using the rubric, "
+                    "reference answer, submission, and graded report as context."
+                ),
+            },
         ]
     }
-
 
 @app.post("/api/assess")
 @app.post("/evaluate")
@@ -403,46 +428,91 @@ async def chat_with_agent(request: Request):
 
 @app.post("/api/chat/stream")
 async def chat_stream_with_agent(request: ChatRequest):
-    """Real-time token streaming endpoint for word-by-word interactive responses."""
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    chat_model = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+    """
+    Stream the Agent Chat response token-by-token.
+    """
 
-    context_str = ""
-    if request.assessment_id:
-        record = get_assessment(request.assessment_id)
-        if record:
-            context_str = (
-                f"Active Assessment Context:\n"
-                f"Total Score: {record.get('total_score', 'N/A')}/{record.get('max_score', 'N/A')} "
-                f"({record.get('percentage', 'N/A')}%)\n"
-                f"Strengths: {json.dumps(record.get('key_strengths', []))}\n"
-                f"Focus Areas: {json.dumps(record.get('priority_focus', []))}\n"
-                f"Questions & Criteria: {json.dumps(record.get('questions', []))}\n"
-            )
+    if not request.assessment_id:
+        raise HTTPException(
+            status_code=400,
+            detail="assessment_id is required."
+        )
 
-    conversation_history = "\n".join([f"{m.role.capitalize()}: {m.content}" for m in request.messages])
-    system_prompt = (
-        "You are an encouraging, expert academic grading tutor assisting a student. "
-        "Answer their questions clearly, concisely, and helpfully based on their assessment feedback.\n\n"
-        f"{context_str}\n\n"
-        f"Conversation History:\n{conversation_history}\n\n"
-        "Assistant:"
-    )
+    if not request.messages:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one chat message is required."
+        )
 
-    def token_generator():
-        try:
-            stream = client.models.generate_content_stream(
-                model=chat_model,
-                contents=[system_prompt]
-            )
-            for chunk in stream:
-                if chunk.text:
-                    yield chunk.text
-        except Exception as err:
-            logger.error(f"Stream chunk error: {err}")
-            yield f"\n[Streaming error: {str(err)}]"
+    try:
+        # IMPORTANT:
+        # Do NOT call get_assessment() here.
+        # It is a FastAPI async route.
+        #
+        # load_assessment() directly loads the assessment and
+        # restores assessment_system.last_context.
+        load_assessment(request.assessment_id)
 
-    return StreamingResponse(token_generator(), media_type="text/plain")
+        # Use exactly the same grounded assessment context
+        # as the normal chat agent.
+        context = assessment_system._chat_context()
+
+        conversation = "\n".join(
+            f"{message.role.upper()}: {message.content}"
+            for message in request.messages[-10:]
+        )
+
+        prompt = (
+            context
+            + "\n\n=== CHAT TRANSCRIPT ===\n"
+            + conversation
+            + "\nASSISTANT:"
+        )
+
+        client = assessment_system.client
+        chat_model = os.getenv(
+            "GEMINI_CHAT_MODEL",
+            "gemini-3.5-flash-lite"
+        )
+
+        def token_generator():
+            try:
+                stream = client.models.generate_content_stream(
+                    model=chat_model,
+                    contents=[prompt],
+                )
+
+                for chunk in stream:
+                    text = getattr(chunk, "text", None)
+
+                    if text:
+                        yield text
+
+            except Exception:
+                logger.exception("Agent chat streaming failed")
+
+                # Don't expose internal exception details to user
+                yield "\n\nSorry, the response stream was interrupted."
+
+        return StreamingResponse(
+            token_generator(),
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception("Failed to initialize chat stream")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Could not start agent chat."
+        )
 
 if __name__ == "__main__":
     import uvicorn

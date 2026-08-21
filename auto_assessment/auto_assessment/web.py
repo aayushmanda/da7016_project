@@ -783,10 +783,6 @@ async def assess_submission(request: Request):
                 status_code=422,
                 detail="No readable student answer was provided.",
             )
-
-        # -----------------------------------------
-        # Run assessment
-        # -----------------------------------------
         report = assessment_system.process_submission(
             **{
                 key: value
@@ -798,16 +794,34 @@ async def assess_submission(request: Request):
             }
         )
 
-        # -----------------------------------------
-        # Save WITH session_id
-        # -----------------------------------------
+        context = assessment_system.last_context
+
         assessment_id = save_assessment(
             report,
             context,
-            shared_payload["question_paper_filename"],
-            item["filename"],
+            payload["question_paper_filename"],
+            payload["student_filename"],
             session_id=session_id,
         )
+
+        return _reshape_report(
+            report,
+            assessment_id,
+        )
+
+        # -----------------------------------------
+        # Save WITH session_id
+        # -----------------------------------------
+        context = assessment_system.last_context
+
+        assessment_id = save_assessment(
+            report,
+            context,
+            payload["question_paper_filename"],
+            payload["student_filename"],
+            session_id=session_id,
+        )
+
         return _reshape_report(
             report,
             assessment_id,
@@ -1215,6 +1229,7 @@ async def assess_batch(request: Request):
                     "question_paper_filename"
                 ],
                 item["filename"],
+                session_id=session_id,
             )
 
             results[student_id] = (

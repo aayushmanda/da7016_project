@@ -418,12 +418,13 @@ Native PDF processing is performed through Gemini multimodal input, avoiding loc
 ### 1. Start the FastAPI backend
 
 ```bash
-cd auto_assessment/auto_assessment
+cd ~/da7016_project/auto_assessment/auto_assessment
 
-uvicorn web:app \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --reload
+export GEMINI_API_KEY="your-key"
+export BATCH_CONCURRENCY=3
+export MAX_BATCH_SIZE=25
+
+uvicorn web:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 The backend will normally be available at:

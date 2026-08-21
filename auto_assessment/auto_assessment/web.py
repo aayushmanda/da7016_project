@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from fastapi import WebSocket, WebSocketDisconnect
-
 from fastapi.responses import StreamingResponse
 
+from starlette.datastructures import FormData
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
@@ -54,6 +54,7 @@ assessment_system = RubricAssessmentAgent()
 DB_PATH = Path(__file__).with_name("assessment_history.db")
 QUESTION_HINTS = ("question", "ques", "qp", "paper", "rubric")
 STUDENT_HINTS = ("student", "answer", "submission", "response", "solution")
+BATCH_CONCURRENCY = max(1, int(os.getenv("BATCH_CONCURRENCY", "3")))
 
 
 def init_db() -> None:
@@ -133,6 +134,191 @@ def save_assessment(
             ),
         )
     return assessment_id
+
+def _prepare_batch_shared_context(payload: dict) -> dict:
+    """
+    Process question paper/rubric/model answer exactly once for a batch.
+    """
+    final_qp = payload["question_paper_text"].strip()
+    final_rubric = payload["rubric_text"].strip()
+
+    # ---------------------------------------------------------
+    # Question paper / rubric transcription
+    # ---------------------------------------------------------
+    if payload.get("qp_pdf_bytes"):
+        transcription = assessment_system.transcriber.run_pdf(
+            payload["qp_pdf_bytes"],
+            payload.get("qp_pdf_filename", "question_paper.pdf"),
+        )
+        final_qp = _join_text(final_qp, [transcription])
+
+    elif payload.get("qp_images"):
+        transcription = assessment_system.transcriber.run_images(
+            payload["qp_images"],
+            "question-paper images",
+        )
+        final_qp = _join_text(final_qp, [transcription])
+
+    if not final_qp:
+        raise ValueError("No readable question paper was provided.")
+
+    # ---------------------------------------------------------
+    # Custom grading instructions
+    # ---------------------------------------------------------
+    custom_instructions = payload.get("custom_instructions", "").strip()
+
+    if custom_instructions:
+        final_rubric = (
+            f"{final_rubric}\n\n"
+            f"ADDITIONAL STAFF INSTRUCTIONS:\n"
+            f"{custom_instructions}"
+        ).strip()
+
+    # ---------------------------------------------------------
+    # Official model answer
+    # ---------------------------------------------------------
+    answer_key_parts = []
+
+    if payload.get("model_answer_text"):
+        answer_key_parts.append(
+            payload["model_answer_text"].strip()
+        )
+
+    if payload.get("model_answer_pdf_bytes"):
+        transcription = assessment_system.transcriber.run_pdf(
+            payload["model_answer_pdf_bytes"],
+            payload.get(
+                "model_answer_pdf_filename",
+                "model_answer.pdf",
+            ),
+        )
+        answer_key_parts.append(transcription)
+
+    elif payload.get("model_answer_images"):
+        transcription = assessment_system.transcriber.run_images(
+            payload["model_answer_images"],
+            "official-model-answer images",
+        )
+        answer_key_parts.append(transcription)
+
+    answer_key = "\n\n".join(
+        part.strip()
+        for part in answer_key_parts
+        if part and part.strip()
+    )
+
+    # Generate only ONCE for entire batch
+    if not answer_key:
+        print("[Batch] Generating shared master answer key")
+        answer_key = assessment_system.solver.run(
+            final_qp,
+            final_rubric,
+        )
+    else:
+        print("[Batch] Using supplied master answer key")
+
+    return {
+        "question_paper": final_qp,
+        "rubric": final_rubric,
+        "answer_key": answer_key,
+    }
+
+
+def _parse_batch_student_file(upload) -> dict:
+    """
+    Parse exactly one student's uploaded answer sheet.
+    """
+    upload.file.seek(0)
+    file_bytes = upload.file.read()
+
+    if not file_bytes:
+        raise ValueError(
+            f"{upload.filename!r} is empty."
+        )
+
+    parsed = extract_content_from_file(
+        upload.filename,
+        file_bytes,
+    )
+
+    if parsed.error:
+        raise ValueError(
+            f"Could not process {upload.filename!r}: "
+            f"{parsed.error}"
+        )
+
+    return {
+        "student_answer_text": parsed.text or "",
+        "student_images": list(parsed.images or []),
+        "student_pdf_bytes": parsed.pdf_bytes,
+        "student_pdf_filename": parsed.filename,
+        "student_filename": parsed.filename,
+    }
+
+
+def _evaluate_batch_student(
+    shared: dict,
+    student_payload: dict,
+) -> tuple[AssessmentReport, dict]:
+    """
+    Grade one student against already prepared shared material.
+
+    A local agent instance is deliberately used so concurrent students
+    do not share last_context/conversation_history.
+    """
+    worker = RubricAssessmentAgent()
+
+    student_work = (
+        student_payload.get("student_answer_text")
+        or ""
+    ).strip()
+
+    if student_payload.get("student_pdf_bytes"):
+        transcription = worker.transcriber.run_pdf(
+            student_payload["student_pdf_bytes"],
+            student_payload.get(
+                "student_pdf_filename",
+                "student_submission.pdf",
+            ),
+        )
+        student_work = _join_text(
+            student_work,
+            [transcription],
+        )
+
+    elif student_payload.get("student_images"):
+        transcription = worker.transcriber.run_images(
+            student_payload["student_images"],
+            "student-submission images",
+        )
+        student_work = _join_text(
+            student_work,
+            [transcription],
+        )
+
+    if not student_work:
+        raise ValueError(
+            "No readable student work was extracted."
+        )
+
+    report = worker.evaluator.run(
+        shared["question_paper"],
+        shared["rubric"],
+        shared["answer_key"],
+        student_work,
+    )
+
+    report = worker.auditor.run(report)
+
+    context = {
+        "question_paper": shared["question_paper"],
+        "rubric": shared["rubric"],
+        "answer_key": shared["answer_key"],
+        "student_work": student_work,
+        "report": report,
+    }
+
+    return report, context
 
 
 def load_assessment(assessment_id: str) -> AssessmentReport:
@@ -712,6 +898,269 @@ async def chat_stream_with_agent(request: ChatRequest):
         raise HTTPException(
             status_code=500,
             detail="Could not start agent chat."
+        )
+
+@app.post("/api/assess/batch")
+async def assess_batch(request: Request):
+    try:
+        form = await request.form()
+
+        answer_files = list(
+            form.getlist("answer_files")
+        )
+
+        if not answer_files:
+            raise HTTPException(
+                status_code=422,
+                detail="No student answer sheets were provided.",
+            )
+
+        # Optional safety limit.
+        max_batch_size = int(
+            os.getenv("MAX_BATCH_SIZE", "25")
+        )
+
+        if len(answer_files) > max_batch_size:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Batch contains {len(answer_files)} students; "
+                    f"maximum allowed is {max_batch_size}."
+                ),
+            )
+
+        # -----------------------------------------------------
+        # Parse common material WITHOUT answer_files.
+        # This lets us reuse your existing upload parser.
+        # -----------------------------------------------------
+        common_form = FormData([
+            (key, value)
+            for key, value in form.multi_items()
+            if key not in {
+                "answer_files",
+                "student_ids",
+            }
+        ])
+
+        shared_payload = _parse_uploads(
+            common_form
+        )
+
+        if not (
+            shared_payload["question_paper_text"]
+            or shared_payload["qp_images"]
+            or shared_payload["qp_pdf_bytes"]
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="No readable question paper was provided.",
+            )
+
+        print(
+            f"[Batch] Preparing common material for "
+            f"{len(answer_files)} student(s)"
+        )
+
+        # Gemini calls are synchronous, therefore move them
+        # away from FastAPI's event loop.
+        shared = await asyncio.to_thread(
+            _prepare_batch_shared_context,
+            shared_payload,
+        )
+
+        # -----------------------------------------------------
+        # Student IDs
+        # -----------------------------------------------------
+        requested_ids = [
+            str(value).strip()
+            for value in form.getlist("student_ids")
+        ]
+
+        students = []
+        seen_ids = set()
+
+        for index, upload in enumerate(answer_files):
+            payload = _parse_batch_student_file(
+                upload
+            )
+
+            student_id = (
+                requested_ids[index]
+                if index < len(requested_ids)
+                and requested_ids[index]
+                else upload.filename
+            )
+
+            # Avoid dictionary collisions if filenames repeat.
+            original_id = student_id
+            suffix = 2
+
+            while student_id in seen_ids:
+                student_id = (
+                    f"{original_id} ({suffix})"
+                )
+                suffix += 1
+
+            seen_ids.add(student_id)
+
+            students.append(
+                (
+                    student_id,
+                    upload.filename,
+                    payload,
+                )
+            )
+
+        # -----------------------------------------------------
+        # Bounded concurrent grading
+        # -----------------------------------------------------
+        semaphore = asyncio.Semaphore(
+            BATCH_CONCURRENCY
+        )
+
+        async def grade_one(
+            student_id: str,
+            filename: str,
+            payload: dict,
+        ):
+            async with semaphore:
+                try:
+                    print(
+                        f"[Batch] Starting {student_id}"
+                    )
+
+                    report, context = (
+                        await asyncio.to_thread(
+                            _evaluate_batch_student,
+                            shared,
+                            payload,
+                        )
+                    )
+
+                    print(
+                        f"[Batch] Completed {student_id}"
+                    )
+
+                    return {
+                        "student_id": student_id,
+                        "filename": filename,
+                        "report": report,
+                        "context": context,
+                        "error": None,
+                    }
+
+                except Exception as error:
+                    logger.exception(
+                        "Batch assessment failed for %s",
+                        student_id,
+                    )
+
+                    return {
+                        "student_id": student_id,
+                        "filename": filename,
+                        "report": None,
+                        "context": None,
+                        "error": str(error),
+                    }
+
+        tasks = [
+            grade_one(
+                student_id,
+                filename,
+                payload,
+            )
+            for student_id, filename, payload
+            in students
+        ]
+
+        completed = await asyncio.gather(
+            *tasks
+        )
+
+        # -----------------------------------------------------
+        # Persist sequentially.
+        #
+        # Do NOT write SQLite concurrently. Gemini grading can
+        # run concurrently, but DB writes remain short/serial.
+        # -----------------------------------------------------
+        results = {}
+        errors = {}
+
+        for item in completed:
+            student_id = item["student_id"]
+
+            if item["error"]:
+                errors[student_id] = item["error"]
+                continue
+
+            report = item["report"]
+            context = item["context"]
+
+            assessment_id = save_assessment(
+                report,
+                context,
+                shared_payload[
+                    "question_paper_filename"
+                ],
+                item["filename"],
+            )
+
+            results[student_id] = (
+                _reshape_report(
+                    report,
+                    assessment_id,
+                )
+            )
+
+        if not results:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": (
+                        "Every student assessment failed."
+                    ),
+                    "errors": errors,
+                },
+            )
+
+        batch_id = str(uuid.uuid4())
+
+        print(
+            f"[Batch] Finished {batch_id}: "
+            f"{len(results)} succeeded, "
+            f"{len(errors)} failed"
+        )
+
+        return {
+            "batch_id": batch_id,
+            "results": results,
+            "errors": errors,
+            "total": len(answer_files),
+            "completed": len(results),
+            "failed": len(errors),
+        }
+
+    except HTTPException:
+        raise
+
+    except ValueError as error:
+        logger.exception(
+            "Batch validation failed"
+        )
+
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        )
+
+    except Exception:
+        logger.exception(
+            "Unexpected batch assessment failure"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Batch assessment failed. Check server logs.",
         )
 
 if __name__ == "__main__":

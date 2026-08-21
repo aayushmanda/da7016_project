@@ -151,6 +151,9 @@ function getScoreTier(score, max) {
 
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
 
+export BATCH_CONCURRENCY=3
+export MAX_BATCH_SIZE=25
+
 export default function App() {
 const [agentModels, setAgentModels] = useState([]);
 const [modelsLoading, setModelsLoading] = useState(false);
@@ -275,7 +278,6 @@ const handleSpeak = (text, index) => {
   const [copyStatus, setCopyStatus] = useState("Copy JSON");
   const [errorMsg, setErrorMsg] = useState("");
   const [response, setResponse] = useState(null);
-  const [assessmentId, setAssessmentId] = useState(null);
   const [isBatch, setIsBatch] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [hasNewResult, setHasNewResult] = useState(false);
@@ -291,6 +293,13 @@ const handleSpeak = (text, index) => {
   const [dispute, setDispute] = useState(emptyDispute);
   const [regradeLoading, setRegradeLoading] = useState(null);
   const [regradeNotes, setRegradeNotes] = useState({});
+  const getActiveAssessmentId = () => {
+  if (isBatch) {
+    return response?.results?.[selectedStudentId]?.assessment_id || null;
+  }
+
+  return assessmentId;
+};
 
   useEffect(() => {
     if (chatWindowRef.current) {
@@ -460,7 +469,7 @@ const handleSpeak = (text, index) => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          assessment_id: assessmentId,
+          assessment_id: getActiveAssessmentId(),
           messages: updatedMessages,
           hasAssessment: !!response,
         }),
@@ -505,12 +514,12 @@ const handleSpeak = (text, index) => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          assessment_id: assessmentId,
+          assessment_id: getActiveAssessmentId(),
           question_id: questionId,
           claimed_mistake: dispute.claimed_mistake.trim(),
           disputed_criterion: dispute.disputed_criterion.trim() || null,
           evidence_quote: dispute.evidence_quote.trim() || null,
-          student_id: isBatch ? selectedStudentId : undefined,
+
         }),
       });
       const data = await res.json();

@@ -171,69 +171,282 @@ def persist_current_report(assessment_id: str) -> None:
 
 
 def _parse_uploads(form) -> dict:
-    qp_text = str(form.get("question_paper_text") or form.get("question_paper") or "")
-    rubric_text = str(form.get("rubric_text") or form.get("rubric") or "")
-    student_text = str(form.get("student_answer_text") or form.get("student_text") or "")
-    model_answer_text = str(form.get("model_answer_text") or form.get("model_answer") or "")
-    custom_instructions = str(form.get("custom_instructions") or form.get("instructions") or "")
+    qp_text = str(
+        form.get("question_paper_text")
+        or form.get("question_paper")
+        or ""
+    )
 
+    rubric_text = str(
+        form.get("rubric_text")
+        or form.get("rubric")
+        or ""
+    )
+
+    student_text = str(
+        form.get("student_answer_text")
+        or form.get("student_text")
+        or ""
+    )
+
+    model_answer_text = str(
+        form.get("model_answer_text")
+        or form.get("model_answer")
+        or ""
+    )
+
+    custom_instructions = str(
+        form.get("custom_instructions")
+        or form.get("instructions")
+        or ""
+    )
+
+    # ---------------------------------------------------------
+    # Question paper / rubric
+    # ---------------------------------------------------------
     qp_images: list[Image.Image] = []
-    student_images: list[Image.Image] = []
     qp_text_parts: list[str] = []
-    student_text_parts: list[str] = []
     qp_pdf_bytes: Optional[bytes] = None
-    student_pdf_bytes: Optional[bytes] = None
     qp_filename = "question_paper"
+
+    # ---------------------------------------------------------
+    # Student submission
+    # ---------------------------------------------------------
+    student_images: list[Image.Image] = []
+    student_text_parts: list[str] = []
+    student_pdf_bytes: Optional[bytes] = None
     student_filename = "student_submission"
+
+    # ---------------------------------------------------------
+    # Official model answer
+    # ---------------------------------------------------------
+    model_answer_images: list[Image.Image] = []
+    model_answer_text_parts: list[str] = []
+    model_answer_pdf_bytes: Optional[bytes] = None
+    model_answer_filename = "model_answer"
 
     for field_name in form.keys():
         for value in form.getlist(field_name):
-            if not (hasattr(value, "filename") and value.filename):
-                continue
-            file_bytes = value.file.read()
-            if not file_bytes:
-                raise HTTPException(status_code=422, detail=f"{value.filename!r} is empty.")
 
-            parsed = extract_content_from_file(value.filename, file_bytes)
+            # Ignore normal text fields.
+            if not (
+                hasattr(value, "filename")
+                and value.filename
+            ):
+                continue
+
+            file_bytes = value.file.read()
+
+            if not file_bytes:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{value.filename!r} is empty.",
+                )
+
+            parsed = extract_content_from_file(
+                value.filename,
+                file_bytes,
+            )
+
             if parsed.error:
                 raise HTTPException(
                     status_code=422,
-                    detail=f"Could not process {value.filename!r}: {parsed.error}",
+                    detail=(
+                        f"Could not process "
+                        f"{value.filename!r}: {parsed.error}"
+                    ),
                 )
 
-            if _is_question_file(field_name, value.filename):
-                qp_filename = parsed.filename
-                qp_text_parts.append(parsed.text)
-                qp_images.extend(parsed.images)
+            # =================================================
+            # MODEL ANSWER
+            # =================================================
+            # Important: handle this BEFORE generic
+            # "answer" classification.
+            if field_name == "model_answer_file":
+
+                model_answer_filename = parsed.filename
+
+                if parsed.text:
+                    model_answer_text_parts.append(
+                        parsed.text
+                    )
+
+                if parsed.images:
+                    model_answer_images.extend(
+                        parsed.images
+                    )
+
                 if parsed.pdf_bytes:
-                    if qp_pdf_bytes:
-                        raise HTTPException(status_code=422, detail="Use one question-paper PDF per request.")
+                    if model_answer_pdf_bytes is not None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "Use only one model-answer "
+                                "PDF per request."
+                            ),
+                        )
+
+                    model_answer_pdf_bytes = (
+                        parsed.pdf_bytes
+                    )
+
+                continue
+
+            # =================================================
+            # QUESTION PAPER / RUBRIC
+            # =================================================
+            if field_name in {
+                "question_paper_file",
+                "rubric_file",
+            }:
+
+                qp_filename = parsed.filename
+
+                if parsed.text:
+                    qp_text_parts.append(parsed.text)
+
+                if parsed.images:
+                    qp_images.extend(parsed.images)
+
+                if parsed.pdf_bytes:
+                    if qp_pdf_bytes is not None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "Use one question-paper/"
+                                "rubric PDF per request."
+                            ),
+                        )
+
                     qp_pdf_bytes = parsed.pdf_bytes
+
+                continue
+
+            # =================================================
+            # STUDENT ANSWER
+            # =================================================
+            if field_name in {
+                "answer_file",
+                "student_answer_file",
+            }:
+
+                student_filename = parsed.filename
+
+                if parsed.text:
+                    student_text_parts.append(
+                        parsed.text
+                    )
+
+                if parsed.images:
+                    student_images.extend(
+                        parsed.images
+                    )
+
+                if parsed.pdf_bytes:
+                    if student_pdf_bytes is not None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "Use one student-answer "
+                                "PDF per request."
+                            ),
+                        )
+
+                    student_pdf_bytes = (
+                        parsed.pdf_bytes
+                    )
+
+                continue
+
+            # =================================================
+            # BACKWARD-COMPATIBILITY FALLBACK
+            # =================================================
+            if _is_question_file(
+                field_name,
+                value.filename,
+            ):
+                qp_filename = parsed.filename
+
+                if parsed.text:
+                    qp_text_parts.append(parsed.text)
+
+                if parsed.images:
+                    qp_images.extend(parsed.images)
+
+                if parsed.pdf_bytes:
+                    if qp_pdf_bytes is not None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "Use one question-paper "
+                                "PDF per request."
+                            ),
+                        )
+
+                    qp_pdf_bytes = parsed.pdf_bytes
+
             else:
                 student_filename = parsed.filename
-                student_text_parts.append(parsed.text)
-                student_images.extend(parsed.images)
+
+                if parsed.text:
+                    student_text_parts.append(
+                        parsed.text
+                    )
+
+                if parsed.images:
+                    student_images.extend(
+                        parsed.images
+                    )
+
                 if parsed.pdf_bytes:
-                    if student_pdf_bytes:
-                        raise HTTPException(status_code=422, detail="Use one student-answer PDF per request.")
-                    student_pdf_bytes = parsed.pdf_bytes
+                    if student_pdf_bytes is not None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "Use one student-answer "
+                                "PDF per request."
+                            ),
+                        )
+
+                    student_pdf_bytes = (
+                        parsed.pdf_bytes
+                    )
 
     return {
-        "question_paper_text": _join_text(qp_text, qp_text_parts),
+        "question_paper_text": _join_text(
+            qp_text,
+            qp_text_parts,
+        ),
+
         "rubric_text": rubric_text,
-        "student_answer_text": _join_text(student_text, student_text_parts),
-        "model_answer_text": model_answer_text,
+
+        "student_answer_text": _join_text(
+            student_text,
+            student_text_parts,
+        ),
+
+        "model_answer_text": _join_text(
+            model_answer_text,
+            model_answer_text_parts,
+        ),
+
         "custom_instructions": custom_instructions,
+
         "qp_images": qp_images,
         "student_images": student_images,
+        "model_answer_images": model_answer_images,
+
         "qp_pdf_bytes": qp_pdf_bytes,
         "student_pdf_bytes": student_pdf_bytes,
+        "model_answer_pdf_bytes": model_answer_pdf_bytes,
+
         "qp_pdf_filename": qp_filename,
         "student_pdf_filename": student_filename,
+        "model_answer_pdf_filename": model_answer_filename,
+
         "question_paper_filename": qp_filename,
         "student_filename": student_filename,
     }
-
 
 init_db()
 

@@ -681,7 +681,7 @@ const handleSpeak = (text, index) => {
                   </span>
                   <input
                     type="file"
-                    accept="image/*,.pdf,.docx,.txt"
+                    accept="image/*,.pdf,.docx,.txt,.md,.csv"
                     onChange={(e) => setRubricFile(e.target.files?.[0] || null)}
                   />
                 </label>

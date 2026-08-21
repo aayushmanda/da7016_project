@@ -21,14 +21,6 @@ const AGENT_ICON_MAP = {
   "Chat Agent": "chat",
 };
 
-const AGENT_MODELS = [
-  { agent: "Transcriber", role: "Multimodal OCR & Document Parsing", model: "gemini-2.5-flash", type: "Vision", desc: "Converts handwritten and typed PDFs/images into clean, structured Markdown." },
-  { agent: "Solver", role: "Master Reference Solution Key", model: "gemini-2.5-flash", type: "Reasoning", desc: "Generates step-by-step master answer key when no official key is provided." },
-  { agent: "Evaluator", role: "Evidence-Anchored Grading & Rules", model: "gemini-2.5-flash", type: "Structured JSON", desc: "Evaluates student work against criteria with verbatim evidence quotes and next-time rules." },
-  { agent: "Auditor", role: "Score Invariant & Arithmetic Validation", model: "Python Deterministic", type: "Code Guardrail", desc: "Validates score arithmetic, criterion sums, and bounding invariants in pure Python code." },
-  { agent: "Regrade Agent", role: "Dispute & Evidence Verification", model: "gemini-2.5-flash", type: "Auditing", desc: "Audits falsifiable student disputes by verifying quoted evidence against raw submissions." },
-  { agent: "Chat Agent", role: "Contextual Dialogue & Voice Tutoring", model: "gemini-2.5-flash", type: "Interactive", desc: "Multi-turn tutoring agent answering student queries grounded in grading context." }
-];
 
 function Icon({ name, className }) {
   const paths = {
@@ -1250,35 +1242,91 @@ const handleSpeak = (text, index) => {
               </div>
             </header>
 
+          {modelsLoading && (
+            <p className="view-subtitle">
+              Loading active pipeline configuration...
+            </p>
+          )}
+
+          {modelsError && (
+            <p className="error-text">
+              {modelsError}
+            </p>
+          )}
+
+          {!modelsLoading && !modelsError && agentModels.length === 0 && (
+            <p className="view-subtitle">
+              No pipeline models were reported by the server.
+            </p>
+          )}
+
+          {!modelsLoading && !modelsError && agentModels.length > 0 && (
             <div className="models-tab-grid">
-              {agentModels.map((item, idx) => {
+              {agentModels.map((item) => {
                 const iconKey = AGENT_ICON_MAP[item.agent] || "models";
 
                 return (
-                  <div key={idx} className="model-spec-card">
+                  <div key={item.agent} className="model-spec-card">
                     <div className="model-spec-header">
-                      <div className="model-spec-title-wrap" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                        <span className="model-agent-icon" style={{ color: "var(--brand-primary, #3b82f6)", display: "flex" }}>
+                      <div
+                        className="model-spec-title-wrap"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "10px",
+                        }}
+                      >
+                        <span
+                          className="model-agent-icon"
+                          style={{
+                            color: "var(--brand-primary, #3b82f6)",
+                            display: "flex",
+                          }}
+                        >
                           <Icon name={iconKey} />
                         </span>
+
                         <div>
-                          <h3 className="model-spec-name">{item.agent}</h3>
-                          <span className="model-spec-role">{item.role}</span>
+                          <h3 className="model-spec-name">
+                            {item.agent}
+                          </h3>
+
+                          <span className="model-spec-role">
+                            {item.role}
+                          </span>
                         </div>
                       </div>
-                      <span className={`model-pill-badge ${item.model?.includes("gemini") ? "badge-gemini" : "badge-python"}`}>
+
+                      <span
+                        className={`model-pill-badge ${
+                          item.model?.toLowerCase().includes("gemini")
+                            ? "badge-gemini"
+                            : "badge-python"
+                        }`}
+                      >
                         {item.type}
                       </span>
                     </div>
-                    <p className="model-spec-desc">{item.desc}</p>
+
+                    <p className="model-spec-desc">
+                      {item.desc}
+                    </p>
+
                     <div className="model-spec-footer">
-                      <span className="model-label">Engine / Checkpoint:</span>
-                      <code className="model-code-tag">{item.model}</code>
+                      <span className="model-label">
+                        Engine / Checkpoint:
+                      </span>
+
+                      <code className="model-code-tag">
+                        {item.model}
+                      </code>
                     </div>
                   </div>
                 );
               })}
             </div>
+          )}
+
           </section>
         )}
 

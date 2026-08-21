@@ -151,8 +151,7 @@ function getScoreTier(score, max) {
 
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
 
-export BATCH_CONCURRENCY=3
-export MAX_BATCH_SIZE=25
+
 
 export default function App() {
 const [agentModels, setAgentModels] = useState([]);

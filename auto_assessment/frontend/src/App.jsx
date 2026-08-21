@@ -152,6 +152,19 @@ function getScoreTier(score, max) {
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
 
 
+function getSessionId() {
+  let id = localStorage.getItem("autoassessment_session_id");
+
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem("autoassessment_session_id", id);
+  }
+
+  return id;
+}
+
+const SESSION_ID = getSessionId();
+
 
 export default function App() {
 const [agentModels, setAgentModels] = useState([]);
@@ -277,6 +290,7 @@ const handleSpeak = (text, index) => {
   const [copyStatus, setCopyStatus] = useState("Copy JSON");
   const [errorMsg, setErrorMsg] = useState("");
   const [response, setResponse] = useState(null);
+  const [assessmentId, setAssessmentId] = useState(null);
   const [isBatch, setIsBatch] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [hasNewResult, setHasNewResult] = useState(false);
@@ -308,18 +322,33 @@ const handleSpeak = (text, index) => {
 
   const loadHistory = async () => {
     setHistoryLoading(true);
+
     try {
-      const res = await fetch("/api/assessments/recent");
-      if (!res.ok) return;
+      const res = await fetch(
+        "/api/assessments/recent?limit=20",
+        {
+          headers: {
+            "X-Session-ID": SESSION_ID,
+          },
+        }
+      );
+
+      if (!res.ok) {
+        const data = await res.json();
+        console.error("History error:", data);
+        return;
+      }
+
       const data = await res.json();
+      console.log("History:", data);
+
       setHistoryList(data.assessments || []);
     } catch (err) {
-      console.warn("Failed to load history:", err);
+      console.error("Failed to load history:", err);
     } finally {
       setHistoryLoading(false);
     }
   };
-
   useEffect(() => {
     loadHistory();
   }, []);
@@ -415,10 +444,16 @@ const handleSpeak = (text, index) => {
     }
 
     try {
-      const res = await fetch(useBatch ? "/api/assess/batch" : "/api/assess", {
-        method: "POST",
-        body: formData,
-      });
+      const res = await fetch(
+        useBatch ? "/api/assess/batch" : "/api/assess",
+        {
+          method: "POST",
+          headers: {
+            "X-Session-ID": SESSION_ID,
+          },
+          body: formData,
+        }
+      );
 
       if (!res.ok) {
         let rawDetail = "";

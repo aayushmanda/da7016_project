@@ -62,6 +62,7 @@ def init_db() -> None:
         connection.execute("""
             CREATE TABLE IF NOT EXISTS assessments (
                 assessment_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 question_paper_filename TEXT NOT NULL DEFAULT '',
                 student_filename TEXT NOT NULL DEFAULT '',
@@ -71,6 +72,20 @@ def init_db() -> None:
                 context_json TEXT NOT NULL
             )
         """)
+
+        # Migration for databases created before session_id existed.
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(assessments)"
+            ).fetchall()
+        }
+
+        if "session_id" not in columns:
+            connection.execute(
+                "ALTER TABLE assessments "
+                "ADD COLUMN session_id TEXT NOT NULL DEFAULT ''"
+            )
 
 
 def _is_question_file(field_name: str, filename: str) -> bool:
@@ -111,6 +126,7 @@ def save_assessment(
     context: dict,
     question_paper_filename: str,
     student_filename: str,
+    session_id: str = "",
 ) -> str:
     assessment_id = str(uuid.uuid4())
     score, max_score = _report_totals(report)
@@ -118,12 +134,21 @@ def save_assessment(
         connection.execute(
             """
             INSERT INTO assessments (
-                assessment_id, created_at, question_paper_filename, student_filename,
-                score, max_score, report_json, context_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                assessment_id,
+                session_id,
+                created_at,
+                question_paper_filename,
+                student_filename,
+                score,
+                max_score,
+                report_json,
+                context_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 assessment_id,
+                session_id,
                 datetime.now(timezone.utc).isoformat(),
                 question_paper_filename,
                 student_filename,
@@ -134,6 +159,20 @@ def save_assessment(
             ),
         )
     return assessment_id
+
+def get_session_id(request: Request) -> str:
+    session_id = (
+        request.headers.get("X-Session-ID")
+        or ""
+    ).strip()
+
+    if not session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="X-Session-ID header is required.",
+        )
+
+    return session_id
 
 def _prepare_batch_shared_context(payload: dict) -> dict:
     """
@@ -713,50 +752,121 @@ def get_pipeline_models():
 @app.post("/evaluate")
 async def assess_submission(request: Request):
     try:
-        payload = _parse_uploads(await request.form())
-        if not (payload["question_paper_text"] or payload["qp_images"] or payload["qp_pdf_bytes"]):
-            raise HTTPException(status_code=422, detail="No readable question paper was provided.")
-        if not (payload["student_answer_text"] or payload["student_images"] or payload["student_pdf_bytes"]):
-            raise HTTPException(status_code=422, detail="No readable student answer was provided.")
+        # -----------------------------------------
+        # Get browser/session identity FIRST
+        # -----------------------------------------
+        session_id = get_session_id(request)
 
-        print(
-            f"[Upload] QP text={len(payload['question_paper_text'])}, QP images={len(payload['qp_images'])}, "
-            f"QP PDF={bool(payload['qp_pdf_bytes'])}; Student text={len(payload['student_answer_text'])}, "
-            f"Student images={len(payload['student_images'])}, Student PDF={bool(payload['student_pdf_bytes'])}"
+        # -----------------------------------------
+        # Parse uploaded files
+        # -----------------------------------------
+        payload = _parse_uploads(
+            await request.form()
         )
-        report = assessment_system.process_submission(**{
-            key: value for key, value in payload.items()
-            if key not in {"question_paper_filename", "student_filename"}
-        })
+
+        if not (
+            payload["question_paper_text"]
+            or payload["qp_images"]
+            or payload["qp_pdf_bytes"]
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="No readable question paper was provided.",
+            )
+
+        if not (
+            payload["student_answer_text"]
+            or payload["student_images"]
+            or payload["student_pdf_bytes"]
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="No readable student answer was provided.",
+            )
+
+        # -----------------------------------------
+        # Run assessment
+        # -----------------------------------------
+        report = assessment_system.process_submission(
+            **{
+                key: value
+                for key, value in payload.items()
+                if key not in {
+                    "question_paper_filename",
+                    "student_filename",
+                }
+            }
+        )
+
+        # -----------------------------------------
+        # Save WITH session_id
+        # -----------------------------------------
         assessment_id = save_assessment(
             report,
-            assessment_system.last_context,
-            payload["question_paper_filename"],
-            payload["student_filename"],
+            context,
+            shared_payload["question_paper_filename"],
+            item["filename"],
+            session_id=session_id,
         )
-        return _reshape_report(report, assessment_id)
+        return _reshape_report(
+            report,
+            assessment_id,
+        )
+
     except HTTPException:
         raise
-    except ValueError as error:
-        print(f"[Assessment] Validation error: {error}")
-        raise HTTPException(status_code=422, detail=str(error))
-    except Exception as error:
-        print(f"[Assessment] Unexpected error: {error}")
-        raise HTTPException(status_code=500, detail="Assessment processing failed. Check server logs.")
 
+    except ValueError as error:
+        logger.exception(
+            "Assessment validation error"
+        )
+
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        )
+
+    except Exception:
+        logger.exception(
+            "Unexpected assessment error"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Assessment processing failed. Check server logs.",
+        )
 
 
 @app.get("/api/assessments/recent")
-async def recent_assessments():
+async def recent_assessments(request: Request, limit: int = 20,):
+    session_id = get_session_id(request)
+
+    limit = max(1, min(limit, 100))
+
     with sqlite3.connect(DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
+
         rows = connection.execute(
             """
-            SELECT assessment_id, created_at, question_paper_filename, student_filename, score, max_score
-            FROM assessments ORDER BY created_at DESC LIMIT 3
-            """
+            SELECT
+                assessment_id,
+                created_at,
+                question_paper_filename,
+                student_filename,
+                score,
+                max_score
+            FROM assessments
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (
+                session_id,
+                limit,
+            ),
         ).fetchall()
-    return {"assessments": [dict(row) for row in rows]}
+
+    return {"assessments": [dict(row)for row in rows]}
 
 
 @app.get("/api/assessments/{assessment_id}")
@@ -903,6 +1013,8 @@ async def chat_stream_with_agent(request: ChatRequest):
 @app.post("/api/assess/batch")
 async def assess_batch(request: Request):
     try:
+        session_id = get_session_id(request)
+
         form = await request.form()
 
         answer_files = list(

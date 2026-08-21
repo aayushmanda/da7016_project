@@ -31,6 +31,28 @@ function Icon({ name, className }) {
         <line x1="12" y1="3" x2="12" y2="15" stroke="currentColor" strokeWidth="2" />
       </>
     ),
+    close: (
+  <>
+    <line
+      x1="18"
+      y1="6"
+      x2="6"
+      y2="18"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+    />
+    <line
+      x1="6"
+      y1="6"
+      x2="18"
+      y2="18"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+    />
+  </>
+),
     score: (
       <>
         <line x1="18" y1="20" x2="18" y2="10" stroke="currentColor" strokeWidth="2" />

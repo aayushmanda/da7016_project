@@ -1433,3 +1433,20 @@ textarea:focus-visible,
   color: var(--red);
 }
 
+.file-chip-remove {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #dc2626;;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.file-chip-remove:hover {
+  background: #fef2f2;
+  color: #dc2626;
+}

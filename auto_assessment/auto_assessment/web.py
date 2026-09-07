@@ -126,6 +126,12 @@ def init_db() -> None:
                 "ADD COLUMN session_id TEXT NOT NULL DEFAULT ''"
             )
 
+        if "batch_id" not in columns:
+            connection.execute(
+                "ALTER TABLE assessments "
+                "ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''"
+            )
+
 
 def _is_question_file(field_name: str, filename: str) -> bool:
     field = field_name.lower()
@@ -169,6 +175,7 @@ def save_assessment(
     question_paper_filename: str,
     student_filename: str,
     session_id: str = "",
+    batch_id: str = "",
 ) -> str:
     assessment_id = str(uuid.uuid4())
     score, max_score = _report_totals(report)
@@ -178,6 +185,7 @@ def save_assessment(
             INSERT INTO assessments (
                 assessment_id,
                 session_id,
+                batch_id,
                 created_at,
                 question_paper_filename,
                 student_filename,
@@ -186,11 +194,12 @@ def save_assessment(
                 report_json,
                 context_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 assessment_id,
                 session_id,
+                batch_id,
                 datetime.now(timezone.utc).isoformat(),
                 question_paper_filename,
                 student_filename,
@@ -202,16 +211,25 @@ def save_assessment(
         )
 
         # Keep only the most recent assessments for this login/session so the
-        # database doesn't grow unbounded per user.
+        # database doesn't grow unbounded per user. A batch grades several
+        # students in one action, sharing one batch_id — group by that so
+        # pruning treats the whole batch as a single retained unit instead of
+        # letting later students in the same batch evict earlier ones.
         connection.execute(
             """
             DELETE FROM assessments
             WHERE session_id = ?
-              AND assessment_id NOT IN (
-                  SELECT assessment_id FROM assessments
-                  WHERE session_id = ?
-                  ORDER BY created_at DESC
-                  LIMIT ?
+              AND COALESCE(NULLIF(batch_id, ''), assessment_id) NOT IN (
+                  SELECT grp FROM (
+                      SELECT
+                          COALESCE(NULLIF(batch_id, ''), assessment_id) AS grp,
+                          MAX(created_at) AS latest
+                      FROM assessments
+                      WHERE session_id = ?
+                      GROUP BY grp
+                      ORDER BY latest DESC
+                      LIMIT ?
+                  )
               )
             """,
             (session_id, session_id, MAX_ASSESSMENTS_PER_SESSION),
@@ -1007,6 +1025,19 @@ async def get_assessment(assessment_id: str):
     return _reshape_report(report, assessment_id)
 
 
+@app.delete("/api/assessments/{assessment_id}")
+async def delete_assessment(assessment_id: str, request: Request):
+    session_id = get_session_id(request)
+    with sqlite3.connect(DB_PATH) as connection:
+        cursor = connection.execute(
+            "DELETE FROM assessments WHERE assessment_id = ? AND session_id = ?",
+            (assessment_id, session_id),
+        )
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+    return {"deleted": assessment_id}
+
+
 @app.post("/api/regrade")
 async def regrade_question(request: Request):
     try:
@@ -1149,6 +1180,7 @@ async def chat_stream_with_agent(request: ChatRequest):
 async def assess_batch(request: Request):
     try:
         session_id = get_session_id(request)
+        batch_id = str(uuid.uuid4())
 
         form = await request.form()
 
@@ -1351,6 +1383,7 @@ async def assess_batch(request: Request):
                 ],
                 item["filename"],
                 session_id=session_id,
+                batch_id=batch_id,
             )
 
             results[student_id] = (

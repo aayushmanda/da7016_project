@@ -903,6 +903,12 @@ textarea:focus-visible,
 .button-ghost { background: none; color: var(--blue); padding: 10px 4px; }
 .button-ghost:hover:not(:disabled) { text-decoration: underline; box-shadow: none; }
 
+.button-danger { background: var(--red); color: white; }
+.button-danger:hover:not(:disabled) { background: #b3261e; }
+
+.button-danger-link { background: none; color: var(--ink-faint); padding: 10px 4px; }
+.button-danger-link:hover:not(:disabled) { color: var(--red); text-decoration: underline; box-shadow: none; }
+
 
 .button:disabled { cursor: not-allowed; opacity: 0.5; }
 

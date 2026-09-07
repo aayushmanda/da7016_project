@@ -530,6 +530,8 @@ const handleSpeak = (text, index) => {
 
   const [historyList, setHistoryList] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
 
   const [regradeOpenFor, setRegradeOpenFor] = useState(null);
   const [dispute, setDispute] = useState(emptyDispute);
@@ -758,6 +760,29 @@ const handleSpeak = (text, index) => {
       setActiveTab("results");
     } catch (err) {
       setErrorMsg(err.message || "Failed to load historical assessment.");
+    }
+  };
+
+  const handleDeleteAssessment = async (id) => {
+    setDeletingId(id);
+    try {
+      const res = await fetch(`/api/assessments/${id}`, {
+        method: "DELETE",
+        headers: { "X-Session-ID": SESSION_ID },
+      });
+      if (!res.ok && res.status !== 404) {
+        throw new Error("Failed to delete assessment.");
+      }
+      setHistoryList((prev) => prev.filter((item) => item.assessment_id !== id));
+      if (assessmentId === id) {
+        setResponse(null);
+        setAssessmentId(null);
+      }
+    } catch (err) {
+      setErrorMsg(err.message || "Failed to delete assessment.");
+    } finally {
+      setDeletingId(null);
+      setDeleteConfirmId(null);
     }
   };
 
@@ -1717,6 +1742,31 @@ const handleSpeak = (text, index) => {
                         >
                           {isCurrent ? "Active In View" : "Open Assessment"}
                         </button>
+                        {deleteConfirmId === item.assessment_id ? (
+                          <>
+                            <button
+                              className="button button-danger button-sm"
+                              onClick={() => handleDeleteAssessment(item.assessment_id)}
+                              disabled={deletingId === item.assessment_id}
+                            >
+                              {deletingId === item.assessment_id ? "Deleting…" : "Confirm delete"}
+                            </button>
+                            <button
+                              className="button button-muted button-sm"
+                              onClick={() => setDeleteConfirmId(null)}
+                              disabled={deletingId === item.assessment_id}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            className="button button-danger-link button-sm"
+                            onClick={() => setDeleteConfirmId(item.assessment_id)}
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
                     </article>
                   );

@@ -361,6 +361,8 @@ class EvaluatorAgent:
         student_work: str,
         student_images: Optional[list[Image.Image]] = None,
         student_pdf_bytes: Optional[bytes] = None,
+        prior_weak_areas: str = "",
+        known_corrections: str = "",
     ) -> AssessmentReport:
         if not student_work.strip():
             raise ValueError(
@@ -370,6 +372,8 @@ class EvaluatorAgent:
         print(
             f"[Evaluator] Starting actionable evaluation with {GRADING_MODEL}"
             + (" (with original pages attached for diagram grading)" if has_visuals else "")
+            + (" (with student memory)" if prior_weak_areas else "")
+            + (" (with prior grading corrections)" if known_corrections else "")
         )
         prompt = (
             "You are an academic evaluator producing rigorous, highly actionable, and growth-oriented feedback.\n\n"
@@ -395,10 +399,26 @@ class EvaluatorAgent:
                 "8. GRADE THE ACTUAL DRAWING: The original submission pages are attached as images below, in addition "
                 "to the transcript. For any question asking for a diagram, sketch, construction, or graph, judge it "
                 "from the attached pages themselves — correct proportions, labeling, and construction — not from the "
-                "transcript's text description of it, which is only a paraphrase and may miss or misstate details.\n\n"
+                "transcript's text description of it, which is only a paraphrase and may miss or misstate details.\n"
                 if has_visuals
-                else "\n"
+                else ""
             )
+            + (
+                "9. STUDENT MEMORY: This student has recurring weakness in the concepts listed below, drawn from their "
+                "own past assessments. If a matching concept appears in this submission, note explicitly whether it "
+                "persisted, improved, or was resolved — do not just repeat the same generic tip verbatim.\n"
+                f"{prior_weak_areas}\n"
+                if prior_weak_areas
+                else ""
+            )
+            + (
+                "10. KNOWN GRADING CORRECTIONS: Other students' disputes on this exact question paper were previously "
+                "reviewed and confirmed as genuine grading mistakes, listed below. Do not repeat these mistakes.\n"
+                f"{known_corrections}\n"
+                if known_corrections
+                else ""
+            )
+            + "\n"
             + UNTRUSTED_DATA_RULE
             + format_section("QUESTION PAPER", question_paper)
             + format_section("RUBRIC", rubric)
@@ -475,6 +495,8 @@ class MultiAgentAssessmentSystem:
         qp_pdf_filename: str = "question_paper.pdf",
         student_pdf_filename: str = "student_submission.pdf",
         custom_instructions: str = "",
+        prior_weak_areas: str = "",
+        corrections_lookup: Optional[Callable[[str], str]] = None,
         **_: Any,
     ) -> AssessmentReport:
         final_qp = (question_paper if question_paper_text is None else question_paper_text).strip()
@@ -523,14 +545,15 @@ class MultiAgentAssessmentSystem:
         else:
             answer_key = self.solver.run(final_qp, final_rubric)
 
-        if needs_visual_grading(final_qp, final_rubric):
-            report = self.evaluator.run(
-                final_qp, final_rubric, answer_key, final_student,
-                student_images=all_student_images or None,
-                student_pdf_bytes=student_pdf_bytes or None,
-            )
-        else:
-            report = self.evaluator.run(final_qp, final_rubric, answer_key, final_student)
+        visual_grading = needs_visual_grading(final_qp, final_rubric)
+        known_corrections = corrections_lookup(final_qp) if corrections_lookup else ""
+        report = self.evaluator.run(
+            final_qp, final_rubric, answer_key, final_student,
+            student_images=(all_student_images or None) if visual_grading else None,
+            student_pdf_bytes=(student_pdf_bytes or None) if visual_grading else None,
+            prior_weak_areas=prior_weak_areas,
+            known_corrections=known_corrections,
+        )
         report = self.auditor.run(report)
 
         self.last_context = {

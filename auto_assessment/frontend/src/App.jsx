@@ -281,6 +281,7 @@ function getSessionId() {
 
 const SESSION_ID = getSessionId();
 const AUTH_STORAGE_KEY = "autoassessment_google_user";
+const AUTH_TOKEN_KEY = "autoassessment_session_token";
 const THEME_STORAGE_KEY = "autoassessment_theme";
 
 function getStoredAuthUser() {
@@ -290,6 +291,11 @@ function getStoredAuthUser() {
     localStorage.removeItem(AUTH_STORAGE_KEY);
     return null;
   }
+}
+
+function authHeaders() {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 
@@ -603,6 +609,7 @@ const handleSpeak = (text, index) => {
         }
 
         localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(data.user));
+        if (data.token) localStorage.setItem(AUTH_TOKEN_KEY, data.token);
         setAuthUser(data.user);
         setAvatarFailed(false);
       } catch (err) {
@@ -657,6 +664,7 @@ const handleSpeak = (text, index) => {
 
   const handleSignOut = () => {
     localStorage.removeItem(AUTH_STORAGE_KEY);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
     window.google?.accounts?.id?.disableAutoSelect?.();
     setAuthUser(null);
     setAvatarFailed(false);
@@ -712,9 +720,15 @@ const handleSpeak = (text, index) => {
         {
           headers: {
             "X-Session-ID": SESSION_ID,
+            ...authHeaders(),
           },
         }
       );
+
+      if (res.status === 401) {
+        handleSignOut();
+        return;
+      }
 
       if (!res.ok) {
         const data = await res.json();
@@ -768,8 +782,12 @@ const handleSpeak = (text, index) => {
     try {
       const res = await fetch(`/api/assessments/${id}`, {
         method: "DELETE",
-        headers: { "X-Session-ID": SESSION_ID },
+        headers: { "X-Session-ID": SESSION_ID, ...authHeaders() },
       });
+      if (res.status === 401) {
+        handleSignOut();
+        return;
+      }
       if (!res.ok && res.status !== 404) {
         throw new Error("Failed to delete assessment.");
       }
@@ -856,10 +874,17 @@ const handleSpeak = (text, index) => {
           method: "POST",
           headers: {
             "X-Session-ID": SESSION_ID,
+            ...authHeaders(),
           },
           body: formData,
         }
       );
+
+      if (res.status === 401) {
+        handleSignOut();
+        setErrorMsg("Your session expired. Please sign in again.");
+        return;
+      }
 
       if (!res.ok) {
         let rawDetail = "";
@@ -1441,6 +1466,20 @@ const handleSpeak = (text, index) => {
                     <span className="stat-value">{passCount}<small>/{questionList.length} questions</small></span>
                   </div>
                 </div>
+
+                {activeReport?.student_memory?.length > 0 && (
+                  <div className="growth-card growth-priorities">
+                    <span className="growth-card-title">Recurring Across Your Past Assessments</span>
+                    <ul>
+                      {activeReport.student_memory.map((m, mIdx) => (
+                        <li key={mIdx}>
+                          <strong>{m.concept}</strong> — weak here {m.weak_count} time{m.weak_count === 1 ? "" : "s"} so far.
+                          {m.last_note ? ` ${m.last_note}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 {activeReport?.strengths?.length > 0 || activeReport?.priority_growth_areas?.length > 0 ? (
                   <div className="growth-summary-grid">

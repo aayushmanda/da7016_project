@@ -1,10 +1,14 @@
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auto_assessment.web")
+import base64
+import hashlib
+import hmac
 import io
 import json
 import re
 import os
+import secrets
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -70,6 +74,51 @@ GOOGLE_ALLOWED_DOMAINS = {
     for domain in os.getenv("GOOGLE_ALLOWED_DOMAINS", "").split(",")
     if domain.strip()
 }
+
+SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip()
+if not SESSION_SECRET:
+    SESSION_SECRET = secrets.token_hex(32)
+    logger.warning(
+        "SESSION_SECRET is not set; generated a temporary one for this process. "
+        "Signed-in users will be signed out on every restart. Set SESSION_SECRET "
+        "in .env to persist sessions across restarts."
+    )
+SESSION_TOKEN_MAX_AGE_SECONDS = 30 * 24 * 60 * 60  # 30 days
+
+
+def issue_session_token(email: str) -> str:
+    payload = json.dumps({"email": email, "iat": int(datetime.now(timezone.utc).timestamp())}).encode()
+    payload_b64 = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    sig = hmac.new(SESSION_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{sig}"
+
+
+def get_user_email(request: Request) -> str:
+    """
+    Recovers the signed-in user's email from a token this server issued at
+    login. Unlike a client-supplied header, this can't be forged: the token
+    is HMAC-signed with a server-side secret the client never sees.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:] if auth_header.lower().startswith("bearer ") else ""
+    if not token or "." not in token:
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+    try:
+        payload_b64, sig = token.rsplit(".", 1)
+        expected_sig = hmac.new(SESSION_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            raise ValueError("bad signature")
+        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        email = str(payload.get("email", "")).strip().lower()
+        issued_at = int(payload.get("iat", 0))
+        if not email:
+            raise ValueError("missing email")
+        if datetime.now(timezone.utc).timestamp() - issued_at > SESSION_TOKEN_MAX_AGE_SECONDS:
+            raise ValueError("expired")
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+    return email
 QUESTION_HINTS = ("question", "ques", "qp", "paper", "rubric")
 STUDENT_HINTS = ("student", "answer", "submission", "response", "solution")
 BATCH_CONCURRENCY = max(1, int(os.getenv("BATCH_CONCURRENCY", "3")))
@@ -132,6 +181,197 @@ def init_db() -> None:
                 "ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''"
             )
 
+        if "user_email" not in columns:
+            connection.execute(
+                "ALTER TABLE assessments "
+                "ADD COLUMN user_email TEXT NOT NULL DEFAULT ''"
+            )
+
+        # Agentic memory: recurring weak concepts per student, and grading
+        # corrections confirmed on a given question paper (so future students
+        # on the same test benefit from a mistake already caught once).
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS student_memory (
+                user_email TEXT NOT NULL,
+                student_key TEXT NOT NULL DEFAULT '',
+                concept TEXT NOT NULL,
+                weak_count INTEGER NOT NULL DEFAULT 0,
+                last_seen TEXT NOT NULL,
+                last_note TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (user_email, student_key, concept)
+            )
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS grading_corrections (
+                id TEXT PRIMARY KEY,
+                question_paper_hash TEXT NOT NULL,
+                disputed_criterion TEXT NOT NULL DEFAULT '',
+                claimed_mistake TEXT NOT NULL,
+                evidence_quote TEXT NOT NULL DEFAULT '',
+                explanation TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_grading_corrections_hash "
+            "ON grading_corrections(question_paper_hash)"
+        )
+
+
+# =====================================================================
+# AGENTIC MEMORY
+#
+# Two independent memory stores, both consumed by EvaluatorAgent.run()
+# as extra prompt context:
+#   - student_memory: per-student recurring weak concepts, updated after
+#     every graded assessment (strengthens on repeat misses, fades on
+#     mastery).
+#   - grading_corrections: confirmed regrade outcomes for a given question
+#     paper, so a mistake caught once isn't repeated on the next student.
+# =====================================================================
+
+def _question_paper_hash(question_paper: str) -> str:
+    normalized = re.sub(r"\s+", " ", question_paper.strip().lower())
+    return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+
+def _canonicalize_concept(connection, user_email: str, student_key: str, concept: str) -> str:
+    """
+    The grading model names concepts freely in its own words, so the same
+    underlying weakness can come back phrased differently each time (e.g.
+    "Quadratic Factoring" vs "Quadratic Factoring via Middle-Term Splitting").
+    Fold a new concept into an existing near-duplicate for this student
+    rather than fragmenting weak_count across near-identical rows.
+    """
+    new_lower = concept.lower()
+    for (existing,) in connection.execute(
+        "SELECT concept FROM student_memory WHERE user_email = ? AND student_key = ?",
+        (user_email, student_key),
+    ).fetchall():
+        existing_lower = existing.lower()
+        if existing_lower in new_lower or new_lower in existing_lower:
+            return existing
+    return concept
+
+
+def update_student_memory(user_email: str, report: AssessmentReport, student_key: str = "") -> None:
+    if not user_email:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(DB_PATH) as connection:
+        for item in report.evaluations:
+            concept = (item.concept_tested or "").strip()
+            if not concept or item.max_score <= 0:
+                continue
+            concept = _canonicalize_concept(connection, user_email, student_key, concept)
+            if item.score < item.max_score:
+                note = (item.actionable_takeaway or item.feedback or "")[:300]
+                connection.execute(
+                    """
+                    INSERT INTO student_memory (user_email, student_key, concept, weak_count, last_seen, last_note)
+                    VALUES (?, ?, ?, 1, ?, ?)
+                    ON CONFLICT(user_email, student_key, concept) DO UPDATE SET
+                        weak_count = weak_count + 1,
+                        last_seen = excluded.last_seen,
+                        last_note = excluded.last_note
+                    """,
+                    (user_email, student_key, concept, now, note),
+                )
+            else:
+                # Full marks this time — let the concept fade rather than
+                # keep flagging something the student has since mastered.
+                connection.execute(
+                    """
+                    UPDATE student_memory SET weak_count = MAX(weak_count - 1, 0), last_seen = ?
+                    WHERE user_email = ? AND student_key = ? AND concept = ?
+                    """,
+                    (now, user_email, student_key, concept),
+                )
+        connection.execute(
+            "DELETE FROM student_memory WHERE user_email = ? AND student_key = ? AND weak_count <= 0",
+            (user_email, student_key),
+        )
+
+
+def get_student_memory(user_email: str, student_key: str = "", limit: int = 5) -> list[dict]:
+    if not user_email:
+        return []
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT concept, weak_count, last_seen, last_note FROM student_memory
+            WHERE user_email = ? AND student_key = ? AND weak_count > 0
+            ORDER BY weak_count DESC, last_seen DESC
+            LIMIT ?
+            """,
+            (user_email, student_key, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def format_weak_areas_for_prompt(entries: list[dict]) -> str:
+    if not entries:
+        return ""
+    return "\n".join(
+        f"- {e['concept']} (seen weak {e['weak_count']}x, most recently: {e['last_note'] or 'no note'})"
+        for e in entries
+    )
+
+
+def record_grading_correction(
+    question_paper: str,
+    disputed_criterion: str,
+    claimed_mistake: str,
+    evidence_quote: str,
+    explanation: str,
+) -> None:
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.execute(
+            """
+            INSERT INTO grading_corrections (
+                id, question_paper_hash, disputed_criterion, claimed_mistake,
+                evidence_quote, explanation, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                _question_paper_hash(question_paper),
+                disputed_criterion or "",
+                claimed_mistake,
+                evidence_quote or "",
+                explanation or "",
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+
+def get_grading_corrections(question_paper: str, limit: int = 5) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT disputed_criterion, claimed_mistake, evidence_quote, explanation
+            FROM grading_corrections
+            WHERE question_paper_hash = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (_question_paper_hash(question_paper), limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def format_corrections_for_prompt(entries: list[dict]) -> str:
+    if not entries:
+        return ""
+    lines = []
+    for e in entries:
+        where = f" ({e['disputed_criterion']})" if e["disputed_criterion"] else ""
+        lines.append(f"- Criterion{where}: {e['claimed_mistake']} — confirmed: {e['explanation']}")
+    return "\n".join(lines)
+
 
 def _is_question_file(field_name: str, filename: str) -> bool:
     field = field_name.lower()
@@ -176,6 +416,7 @@ def save_assessment(
     student_filename: str,
     session_id: str = "",
     batch_id: str = "",
+    user_email: str = "",
 ) -> str:
     assessment_id = str(uuid.uuid4())
     score, max_score = _report_totals(report)
@@ -186,6 +427,7 @@ def save_assessment(
                 assessment_id,
                 session_id,
                 batch_id,
+                user_email,
                 created_at,
                 question_paper_filename,
                 student_filename,
@@ -194,12 +436,13 @@ def save_assessment(
                 report_json,
                 context_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 assessment_id,
                 session_id,
                 batch_id,
+                user_email,
                 datetime.now(timezone.utc).isoformat(),
                 question_paper_filename,
                 student_filename,
@@ -210,29 +453,29 @@ def save_assessment(
             ),
         )
 
-        # Keep only the most recent assessments for this login/session so the
-        # database doesn't grow unbounded per user. A batch grades several
-        # students in one action, sharing one batch_id — group by that so
-        # pruning treats the whole batch as a single retained unit instead of
-        # letting later students in the same batch evict earlier ones.
+        # Keep only the most recent assessments for this signed-in user so the
+        # database doesn't grow unbounded. A batch grades several students in
+        # one action, sharing one batch_id — group by that so pruning treats
+        # the whole batch as a single retained unit instead of letting later
+        # students in the same batch evict earlier ones.
         connection.execute(
             """
             DELETE FROM assessments
-            WHERE session_id = ?
+            WHERE user_email = ?
               AND COALESCE(NULLIF(batch_id, ''), assessment_id) NOT IN (
                   SELECT grp FROM (
                       SELECT
                           COALESCE(NULLIF(batch_id, ''), assessment_id) AS grp,
                           MAX(created_at) AS latest
                       FROM assessments
-                      WHERE session_id = ?
+                      WHERE user_email = ?
                       GROUP BY grp
                       ORDER BY latest DESC
                       LIMIT ?
                   )
               )
             """,
-            (session_id, session_id, MAX_ASSESSMENTS_PER_SESSION),
+            (user_email, user_email, MAX_ASSESSMENTS_PER_SESSION),
         )
     return assessment_id
 
@@ -293,7 +536,8 @@ def authenticate_google(payload: GoogleAuthRequest) -> dict:
             "email": email,
             "name": claims.get("name") or email,
             "picture": claims.get("picture") or "",
-        }
+        },
+        "token": issue_session_token(email),
     }
 
 def _prepare_batch_shared_context(payload: dict) -> dict:
@@ -421,6 +665,8 @@ def _parse_batch_student_file(upload) -> dict:
 def _evaluate_batch_student(
     shared: dict,
     student_payload: dict,
+    user_email: str = "",
+    student_key: str = "",
 ) -> tuple[AssessmentReport, dict]:
     """
     Grade one student against already prepared shared material.
@@ -429,6 +675,7 @@ def _evaluate_batch_student(
     do not share last_context/conversation_history.
     """
     worker = RubricAssessmentAgent()
+    prior_weak_areas = format_weak_areas_for_prompt(get_student_memory(user_email, student_key))
 
     student_work = (
         student_payload.get("student_answer_text")
@@ -463,6 +710,8 @@ def _evaluate_batch_student(
             "No readable student work was extracted."
         )
 
+    known_corrections = format_corrections_for_prompt(get_grading_corrections(shared["question_paper"]))
+
     if needs_visual_grading(shared["question_paper"], shared["rubric"]):
         report = worker.evaluator.run(
             shared["question_paper"],
@@ -471,6 +720,8 @@ def _evaluate_batch_student(
             student_work,
             student_images=student_payload.get("student_images") or None,
             student_pdf_bytes=student_payload.get("student_pdf_bytes") or None,
+            prior_weak_areas=prior_weak_areas,
+            known_corrections=known_corrections,
         )
     else:
         report = worker.evaluator.run(
@@ -478,6 +729,8 @@ def _evaluate_batch_student(
             shared["rubric"],
             shared["answer_key"],
             student_work,
+            prior_weak_areas=prior_weak_areas,
+            known_corrections=known_corrections,
         )
 
     report = worker.auditor.run(report)
@@ -891,6 +1144,7 @@ async def assess_submission(request: Request):
         # Get browser/session identity FIRST
         # -----------------------------------------
         session_id = get_session_id(request)
+        user_email = get_user_email(request)
 
         # -----------------------------------------
         # Parse uploaded files
@@ -919,6 +1173,7 @@ async def assess_submission(request: Request):
                 detail="No readable student answer was provided.",
             )
         assessment_system = get_assessment_system()
+        prior_weak_areas = format_weak_areas_for_prompt(get_student_memory(user_email))
         report = assessment_system.process_submission(
             **{
                 key: value
@@ -927,10 +1182,13 @@ async def assess_submission(request: Request):
                     "question_paper_filename",
                     "student_filename",
                 }
-            }
+            },
+            prior_weak_areas=prior_weak_areas,
+            corrections_lookup=lambda qp: format_corrections_for_prompt(get_grading_corrections(qp)),
         )
 
         context = assessment_system.last_context
+        update_student_memory(user_email, report)
 
         assessment_id = save_assessment(
             report,
@@ -938,12 +1196,12 @@ async def assess_submission(request: Request):
             payload["question_paper_filename"],
             payload["student_filename"],
             session_id=session_id,
+            user_email=user_email,
         )
 
-        return _reshape_report(
-            report,
-            assessment_id,
-        )
+        response = _reshape_report(report, assessment_id)
+        response["student_memory"] = get_student_memory(user_email)
+        return response
 
         # -----------------------------------------
         # Save WITH session_id
@@ -989,7 +1247,7 @@ async def assess_submission(request: Request):
 
 @app.get("/api/assessments/recent")
 async def recent_assessments(request: Request, limit: int = 20,):
-    session_id = get_session_id(request)
+    user_email = get_user_email(request)
 
     limit = max(1, min(limit, 100))
 
@@ -1006,12 +1264,12 @@ async def recent_assessments(request: Request, limit: int = 20,):
                 score,
                 max_score
             FROM assessments
-            WHERE session_id = ?
+            WHERE user_email = ?
             ORDER BY created_at DESC
             LIMIT ?
             """,
             (
-                session_id,
+                user_email,
                 limit,
             ),
         ).fetchall()
@@ -1027,11 +1285,11 @@ async def get_assessment(assessment_id: str):
 
 @app.delete("/api/assessments/{assessment_id}")
 async def delete_assessment(assessment_id: str, request: Request):
-    session_id = get_session_id(request)
+    user_email = get_user_email(request)
     with sqlite3.connect(DB_PATH) as connection:
         cursor = connection.execute(
-            "DELETE FROM assessments WHERE assessment_id = ? AND session_id = ?",
-            (assessment_id, session_id),
+            "DELETE FROM assessments WHERE assessment_id = ? AND user_email = ?",
+            (assessment_id, user_email),
         )
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Assessment not found.")
@@ -1061,6 +1319,16 @@ async def regrade_question(request: Request):
         )
         result = assessment_system.regrade_question(question_id, dispute)
         persist_current_report(assessment_id)
+
+        if result.claim_verified and result.changed:
+            record_grading_correction(
+                question_paper=assessment_system.last_context["question_paper"],
+                disputed_criterion=dispute.disputed_criterion or "",
+                claimed_mistake=dispute.claimed_mistake,
+                evidence_quote=dispute.evidence_quote or "",
+                explanation=result.explanation,
+            )
+
         return {
             "question": result.question.model_dump(),
             "changed": result.changed,
@@ -1180,6 +1448,7 @@ async def chat_stream_with_agent(request: ChatRequest):
 async def assess_batch(request: Request):
     try:
         session_id = get_session_id(request)
+        user_email = get_user_email(request)
         batch_id = str(uuid.uuid4())
 
         form = await request.form()
@@ -1313,6 +1582,8 @@ async def assess_batch(request: Request):
                             _evaluate_batch_student,
                             shared,
                             payload,
+                            user_email,
+                            student_id,
                         )
                     )
 
@@ -1375,6 +1646,8 @@ async def assess_batch(request: Request):
             report = item["report"]
             context = item["context"]
 
+            update_student_memory(user_email, report, student_key=student_id)
+
             assessment_id = save_assessment(
                 report,
                 context,
@@ -1384,14 +1657,12 @@ async def assess_batch(request: Request):
                 item["filename"],
                 session_id=session_id,
                 batch_id=batch_id,
+                user_email=user_email,
             )
 
-            results[student_id] = (
-                _reshape_report(
-                    report,
-                    assessment_id,
-                )
-            )
+            student_result = _reshape_report(report, assessment_id)
+            student_result["student_memory"] = get_student_memory(user_email, student_key=student_id)
+            results[student_id] = student_result
 
         if not results:
             raise HTTPException(

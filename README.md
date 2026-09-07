@@ -30,6 +30,15 @@ Student Submission ──▶ Transcriber ──▶ Evaluator ──▶ Auditor �
 
 Model names default to `gemini-3.5-flash-lite` and are overridable via env vars (below). The live configuration is always available at `GET /api/models` — the frontend's **Models** page reads it directly rather than hard-coding it.
 
+### Agentic memory
+
+The Evaluator isn't stateless across runs — two lightweight memory stores feed back into every grading call:
+
+- **Per-student weak-area memory** — after each assessment, recurring weak concepts are tracked per signed-in student (strengthens on repeat misses, fades once mastered) and fed back into the next grading pass, so feedback can say a mistake *persisted* or *improved* rather than repeating the same generic tip.
+- **Cross-submission grading corrections** — when a "Request re-evaluation" confirms a genuine grading mistake, that correction is remembered against the exact question paper, so the next student graded on the same test doesn't get the same mistake repeated.
+
+Identity for this is the signed-in Google account (proven via a server-issued, HMAC-signed session token — not a self-reported header), not the anonymous per-browser ID used for cosmetic session state.
+
 ---
 
 ## Quick start
@@ -49,6 +58,7 @@ Create `.env` in the repo root:
 |---|---|---|
 | `GEMINI_API_KEY` | yes | grading/transcription/chat |
 | `GOOGLE_CLIENT_ID` | yes | Google sign-in |
+| `SESSION_SECRET` | recommended | signs session tokens; if unset, a random one is generated per process start and everyone is signed out on restart |
 | `GOOGLE_ALLOWED_DOMAINS` | no | comma-separated email domains allowed to sign in; unset = allow all |
 | `BODHAN_API_KEY` | no | enables "listen" (text-to-speech) in Agent Chat |
 | `GEMINI_TRANSCRIPTION_MODEL` / `GEMINI_GRADING_MODEL` / `GEMINI_CHAT_MODEL` | no | override the default model per stage |

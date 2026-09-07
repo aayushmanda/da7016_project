@@ -1,6 +1,7 @@
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auto_assessment.web")
+import io
 import json
 import re
 import os
@@ -21,6 +22,7 @@ from document_parser import extract_content_from_file
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from google import genai
+from openai import OpenAI
 from google.auth.transport import requests as google_auth_requests
 from google.oauth2 import id_token
 from google.genai import types
@@ -33,6 +35,7 @@ from agent import (
     TRANSCRIPTION_MODEL,
     GRADING_MODEL,
     CHAT_MODEL,
+    needs_visual_grading,
 )
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -59,6 +62,8 @@ app.add_middleware(
 )
 
 DB_PATH = Path(__file__).with_name("assessment_history.db")
+BODHAN_API_KEY = os.getenv("BODHAN_API_KEY", "").strip()
+BODHAN_BASE_URL = "https://api.bodhan.ai/v1"
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_ALLOWED_DOMAINS = {
     domain.strip().lower()
@@ -69,6 +74,7 @@ QUESTION_HINTS = ("question", "ques", "qp", "paper", "rubric")
 STUDENT_HINTS = ("student", "answer", "submission", "response", "solution")
 BATCH_CONCURRENCY = max(1, int(os.getenv("BATCH_CONCURRENCY", "3")))
 _assessment_system: Optional[RubricAssessmentAgent] = None
+_tts_client: Optional[OpenAI] = None
 
 
 def get_assessment_system() -> RubricAssessmentAgent:
@@ -76,6 +82,18 @@ def get_assessment_system() -> RubricAssessmentAgent:
     if _assessment_system is None:
         _assessment_system = RubricAssessmentAgent()
     return _assessment_system
+
+
+def get_tts_client() -> OpenAI:
+    global _tts_client
+    if _tts_client is None:
+        if not BODHAN_API_KEY:
+            raise HTTPException(
+                status_code=500,
+                detail="BODHAN_API_KEY environment variable is missing.",
+            )
+        _tts_client = OpenAI(base_url=BODHAN_BASE_URL, api_key=BODHAN_API_KEY)
+    return _tts_client
 
 
 def init_db() -> None:
@@ -142,6 +160,9 @@ def _reshape_report(report: AssessmentReport, assessment_id: Optional[str] = Non
     return response
 
 
+MAX_ASSESSMENTS_PER_SESSION = 5
+
+
 def save_assessment(
     report: AssessmentReport,
     context: dict,
@@ -178,6 +199,22 @@ def save_assessment(
                 report.model_dump_json(),
                 json.dumps(context, default=str),
             ),
+        )
+
+        # Keep only the most recent assessments for this login/session so the
+        # database doesn't grow unbounded per user.
+        connection.execute(
+            """
+            DELETE FROM assessments
+            WHERE session_id = ?
+              AND assessment_id NOT IN (
+                  SELECT assessment_id FROM assessments
+                  WHERE session_id = ?
+                  ORDER BY created_at DESC
+                  LIMIT ?
+              )
+            """,
+            (session_id, session_id, MAX_ASSESSMENTS_PER_SESSION),
         )
     return assessment_id
 
@@ -408,12 +445,22 @@ def _evaluate_batch_student(
             "No readable student work was extracted."
         )
 
-    report = worker.evaluator.run(
-        shared["question_paper"],
-        shared["rubric"],
-        shared["answer_key"],
-        student_work,
-    )
+    if needs_visual_grading(shared["question_paper"], shared["rubric"]):
+        report = worker.evaluator.run(
+            shared["question_paper"],
+            shared["rubric"],
+            shared["answer_key"],
+            student_work,
+            student_images=student_payload.get("student_images") or None,
+            student_pdf_bytes=student_payload.get("student_pdf_bytes") or None,
+        )
+    else:
+        report = worker.evaluator.run(
+            shared["question_paper"],
+            shared["rubric"],
+            shared["answer_key"],
+            student_work,
+        )
 
     report = worker.auditor.run(report)
 
@@ -1369,26 +1416,56 @@ if __name__ == "__main__":
     uvicorn.run("web:app", host="0.0.0.0", port=8000, reload=True)
 class TTSRequest(BaseModel):
     text: str
+    lang: str = "en"
+    voice: str = "Kavya"
+
+def _clean_for_speech(text: str) -> str:
+    text = re.sub(r"```[\s\S]*?```", " ", text)
+    text = re.sub(r"\$\$([\s\S]*?)\$\$", r" \1 ", text)
+    text = re.sub(r"\$([^$]*?)\$", r" \1 ", text)
+    text = re.sub(r"\\[a-zA-Z]+\{([^{}]*)\}", r"\1", text)  # \text{cm} -> cm
+    text = re.sub(r"\\[a-zA-Z]+", "", text)  # remaining LaTeX commands, e.g. \cdot
+    text = text.replace("{", "").replace("}", "").replace("\\", "")
+    text = re.sub(r"[*#_`\[\]()]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+# Measured against the live API: this model generates audio at close to real-time
+# speed (bytes/sec ~= the resulting clip's own playback rate), so wait time tracks
+# the *spoken* length of the input, not just its character count. An unbounded
+# input can take a minute or more. Cap it, cutting at the last full sentence
+# rather than mid-word, to keep the wait to roughly 10-15 seconds.
+SPEECH_CHAR_LIMIT = 300
+
+def _trim_for_speech(text: str, limit: int = SPEECH_CHAR_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    window = text[:limit]
+    cutoff = max(window.rfind(". "), window.rfind("! "), window.rfind("? "))
+    return window[: cutoff + 1] if cutoff > limit // 2 else window.rsplit(" ", 1)[0] + "."
 
 @app.post("/api/voice/synthesize")
 async def synthesize_voice(request: TTSRequest):
     """
-    Synthesizes natural speech audio on the backend using Google Gemini Audio / gTTS.
-    Returns playable audio/mp3 stream directly to the frontend.
+    Synthesizes natural speech audio using the Bodhan "indic-speak" TTS model.
+    Returns a playable audio stream directly to the frontend.
     """
-    clean_text = re.sub(r'[*#_`\[\]()]', '', request.text).strip()
+    clean_text = _trim_for_speech(_clean_for_speech(request.text))
     if not clean_text:
         raise HTTPException(status_code=400, detail="Empty text provided")
 
-    # Try backend generation
+    client = get_tts_client()
     try:
-        from gtts import gTTS
-        import io
-        mp3_fp = io.BytesIO()
-        tts = gTTS(text=clean_text[:500], lang='en', slow=False)
-        tts.write_to_fp(mp3_fp)
-        mp3_fp.seek(0)
-        return StreamingResponse(mp3_fp, media_type="audio/mpeg")
+        speech = await asyncio.to_thread(
+            client.audio.speech.create,
+            model="indic-speak",
+            input=clean_text,
+            voice=request.voice,
+            instructions=json.dumps({"lang": request.lang}),
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"TTS generation error: {e}")
-        raise HTTPException(status_code=500, detail="Voice synthesis failed")
+        raise HTTPException(status_code=502, detail="Voice synthesis failed")
+
+    return StreamingResponse(io.BytesIO(speech.content), media_type="audio/wav")

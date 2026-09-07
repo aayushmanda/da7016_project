@@ -820,6 +820,43 @@ img, svg { max-width: 100%; }
 }
 
 
+.optional-section { display: flex; flex-direction: column; }
+
+.optional-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--surface-muted);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.optional-toggle:hover { border-color: var(--brand-border); background: var(--brand-primary-soft); }
+.optional-toggle svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--ink-faint); }
+
+.optional-toggle-hint {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+
+.optional-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 12px;
+  animation: view-fade 0.15s ease;
+}
+
+
 textarea {
   width: 100%; min-height: 84px; border-radius: var(--radius-sm);
   border: 1px solid var(--line); background: var(--surface-muted); color: var(--ink);
@@ -946,6 +983,7 @@ textarea:focus-visible,
   align-items: center; gap: 8px; margin-bottom: 12px;
 }
 .card-meta h3 { margin: 0; font-size: 0.95rem; font-weight: 600; overflow-wrap: break-word; }
+.card-meta-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 
 
 .badge-pill {
@@ -956,11 +994,33 @@ textarea:focus-visible,
 .badge-pill-low { background: var(--red-tint); color: var(--red); }
 
 
-.feedback-box {
-  border-left: 3px solid var(--blue); background: var(--blue-tint);
-  padding: 12px 14px; border-radius: var(--radius-sm); margin-bottom: 12px;
-  line-height: 1.5; font-size: 0.88rem; overflow-wrap: break-word;
+.feedback-panel {
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  margin-bottom: 12px;
+  overflow: hidden;
 }
+
+.feedback-text {
+  padding: 12px 14px;
+  line-height: 1.5;
+  font-size: 0.88rem;
+  overflow-wrap: break-word;
+}
+
+.feedback-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.feedback-tip svg { width: 15px; height: 15px; flex: 0 0 auto; margin-top: 2px; color: var(--ink-faint); }
 
 
 .rubric-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
@@ -1115,33 +1175,33 @@ textarea:focus-visible,
 @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
 
-.chat-markdown {
+.markdown-body {
   font-size: 0.9rem;
   line-height: 1.55;
   overflow-wrap: break-word;
 }
 
 
-.chat-markdown > *:first-child { margin-top: 0; }
-.chat-markdown > *:last-child { margin-bottom: 0; }
+.markdown-body > *:first-child { margin-top: 0; }
+.markdown-body > *:last-child { margin-bottom: 0; }
 
 
-.chat-markdown p { margin: 0 0 8px; }
-.chat-markdown strong { font-weight: 700; }
-.chat-markdown em { font-style: italic; }
+.markdown-body p { margin: 0 0 8px; }
+.markdown-body strong { font-weight: 700; }
+.markdown-body em { font-style: italic; }
 
 
-.chat-markdown ul,
-.chat-markdown ol {
+.markdown-body ul,
+.markdown-body ol {
   margin: 0 0 8px;
   padding-left: 20px;
 }
 
 
-.chat-markdown li { margin-bottom: 4px; }
+.markdown-body li { margin-bottom: 4px; }
 
 
-.chat-markdown code {
+.markdown-body code {
   background: rgba(128, 128, 128, 0.16);
   border-radius: 4px;
   padding: 2px 5px;
@@ -1150,7 +1210,7 @@ textarea:focus-visible,
 }
 
 
-.chat-markdown pre {
+.markdown-body pre {
   background: rgba(128, 128, 128, 0.16);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
@@ -1159,13 +1219,13 @@ textarea:focus-visible,
 }
 
 
-.chat-markdown pre code {
+.markdown-body pre code {
   background: none;
   padding: 0;
 }
 
 
-.chat-markdown table {
+.markdown-body table {
   width: 100%;
   border-collapse: collapse;
   margin: 4px 0 10px;
@@ -1175,22 +1235,22 @@ textarea:focus-visible,
 }
 
 
-.chat-markdown thead, .chat-markdown tbody, .chat-markdown tr {
+.markdown-body thead, .markdown-body tbody, .markdown-body tr {
   display: table;
   width: 100%;
   table-layout: fixed;
 }
 
 
-.chat-markdown th,
-.chat-markdown td {
+.markdown-body th,
+.markdown-body td {
   border: 1px solid var(--line);
   padding: 6px 10px;
   text-align: left;
 }
 
 
-.chat-markdown th {
+.markdown-body th {
   background: var(--surface-muted);
   font-weight: 600;
 }
@@ -1200,6 +1260,11 @@ textarea:focus-visible,
 .chat-user .chat-markdown pre {
   background: rgba(255, 116, 72, 0.12);
 }
+
+
+/* KaTeX math rendering */
+.markdown-body .katex { font-size: 1.04em; }
+.markdown-body .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
 
 
 .chat-form {
@@ -1282,6 +1347,60 @@ textarea:focus-visible,
 
 @media (max-width: 480px) { .chat-form { padding: 6px 6px 6px 16px; } }
 
+
+/* ==================================================================
+   Answer panel — student's own written answer, on click
+================================================================== */
+.answer-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.answer-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.answer-toggle-btn:hover { color: var(--brand-primary-dark); }
+.answer-toggle-btn svg { width: 15px; height: 15px; flex: 0 0 auto; }
+
+.answer-panel {
+  flex: 1 1 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  overflow: hidden;
+  animation: view-fade 0.15s ease;
+}
+
+.answer-panel-hint {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--line);
+}
+
+.answer-panel-body {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 14px;
+  color: var(--ink);
+  word-break: break-word;
+}
 
 /* ==================================================================
    Regrade (structured re-evaluation) UI
@@ -1499,41 +1618,11 @@ textarea:focus-visible,
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--blue-dark);
-  background: var(--blue-tint);
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
   padding: 3px 8px;
   border-radius: 6px;
-}
-
-/* Actionable Takeaway Callout Box */
-.actionable-takeaway-box {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  background: var(--amber-tint);
-  border: 1px solid var(--amber-tint);
-  border-left: 4px solid var(--amber);
-  padding: 12px 16px;
-  border-radius: var(--radius-sm);
-  margin-bottom: 14px;
-}
-.actionable-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.78rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--amber);
-}
-.actionable-title svg { color: var(--amber); width: 16px; height: 16px; }
-.actionable-takeaway-box p {
-  margin: 0;
-  font-size: 0.9rem;
-  font-weight: 500;
-  color: var(--ink);
-  line-height: 1.5;
 }
 
 .criterion-content {
@@ -1850,6 +1939,13 @@ textarea:focus-visible,
   background: var(--red-tint);
   color: var(--red);
 }
+
+.listen-icon-btn.is-loading {
+  background: var(--brand-primary-soft);
+  color: var(--brand-primary);
+}
+
+.listen-icon-btn.is-loading svg { animation: spin 0.9s linear infinite; }
 
 .file-chip-remove {
   width: 30px;

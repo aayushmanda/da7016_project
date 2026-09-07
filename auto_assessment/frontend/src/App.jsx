@@ -1,7 +1,22 @@
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import "./styles.css";
+
+function Markdown({ children, className = "" }) {
+  const text = typeof children === "string" ? children : "";
+  if (!text.trim()) return null;
+  return (
+    <div className={`markdown-body ${className}`.trim()}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 
 const NAV_ITEMS = [
@@ -372,22 +387,123 @@ const speakText = (text) => {
 };
 
 const [speakingIndex, setSpeakingIndex] = useState(null);
+const [speechLoadingIndex, setSpeechLoadingIndex] = useState(null);
+const speechAudioRef = useRef(null);
+const speechUrlRef = useRef(null);
+const speechSessionRef = useRef(0);
+
+// Split into sentence-sized pieces so we can start playback quickly and
+// generate the rest while the first part plays, instead of one long wait
+// up front for the whole message.
+const SPEECH_CHUNK_MAX = 260;
+function splitIntoSpeechChunks(text) {
+  const sentences = text.replace(/\s+/g, " ").trim().match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) || [];
+  const chunks = [];
+  let current = "";
+  for (const raw of sentences) {
+    const sentence = raw.trim();
+    if (!sentence) continue;
+    if (sentence.length > SPEECH_CHUNK_MAX) {
+      if (current) { chunks.push(current); current = ""; }
+      let rest = sentence;
+      while (rest.length > SPEECH_CHUNK_MAX) {
+        let cut = rest.lastIndexOf(" ", SPEECH_CHUNK_MAX);
+        if (cut <= 0) cut = SPEECH_CHUNK_MAX;
+        chunks.push(rest.slice(0, cut).trim());
+        rest = rest.slice(cut).trim();
+      }
+      current = rest;
+      continue;
+    }
+    const merged = current ? `${current} ${sentence}` : sentence;
+    if (merged.length > SPEECH_CHUNK_MAX) {
+      chunks.push(current);
+      current = sentence;
+    } else {
+      current = merged;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+const fetchSpeechChunkUrl = async (text) => {
+  const res = await fetch("/api/voice/synthesize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error("Voice synthesis failed");
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+};
+
+const stopSpeaking = () => {
+  speechSessionRef.current += 1;
+  speechAudioRef.current?.pause();
+  speechAudioRef.current = null;
+  if (speechUrlRef.current) {
+    URL.revokeObjectURL(speechUrlRef.current);
+    speechUrlRef.current = null;
+  }
+  setSpeakingIndex(null);
+  setSpeechLoadingIndex(null);
+};
 
 const handleSpeak = (text, index) => {
-  if (speakingIndex === index) {
-    window.speechSynthesis.cancel();
-    setSpeakingIndex(null);
+  if (speakingIndex === index || speechLoadingIndex === index) {
+    stopSpeaking();
     return;
   }
 
-  window.speechSynthesis.cancel();
-  
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.onend = () => setSpeakingIndex(null);
-  utterance.onerror = () => setSpeakingIndex(null);
+  stopSpeaking();
+  const mySession = speechSessionRef.current;
 
-  setSpeakingIndex(index);
-  window.speechSynthesis.speak(utterance);
+  const chunks = splitIntoSpeechChunks(text);
+  if (chunks.length === 0) return;
+
+  setSpeechLoadingIndex(index);
+  let chunkIndex = 0;
+  let nextUrlPromise = null;
+
+  const playNext = async () => {
+    if (speechSessionRef.current !== mySession) return;
+    if (chunkIndex >= chunks.length) {
+      stopSpeaking();
+      return;
+    }
+
+    try {
+      const url = await (nextUrlPromise || fetchSpeechChunkUrl(chunks[chunkIndex]));
+      if (speechSessionRef.current !== mySession) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+
+      chunkIndex += 1;
+      nextUrlPromise = chunkIndex < chunks.length ? fetchSpeechChunkUrl(chunks[chunkIndex]) : null;
+
+      setSpeechLoadingIndex(null);
+      setSpeakingIndex(index);
+
+      const audio = new Audio(url);
+      speechAudioRef.current = audio;
+      speechUrlRef.current = url;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        playNext();
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        stopSpeaking();
+      };
+      await audio.play();
+    } catch (err) {
+      stopSpeaking();
+    }
+  };
+
+  playNext();
 };
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -397,6 +513,7 @@ const handleSpeak = (text, index) => {
   const [modelAnswerFile, setModelAnswerFile] = useState(null);
   const [modelAnswerText, setModelAnswerText] = useState("");
   const [additionalInstructions, setAdditionalInstructions] = useState("");
+  const [showOptionalUpload, setShowOptionalUpload] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isRawMode, setIsRawMode] = useState(false);
   const [copyStatus, setCopyStatus] = useState("Copy JSON");
@@ -417,6 +534,8 @@ const handleSpeak = (text, index) => {
   const [regradeOpenFor, setRegradeOpenFor] = useState(null);
   const [dispute, setDispute] = useState(emptyDispute);
   const [regradeLoading, setRegradeLoading] = useState(null);
+  const [answerPanelOpenFor, setAnswerPanelOpenFor] = useState(null);
+  const [questionPanelOpenFor, setQuestionPanelOpenFor] = useState(null);
   const [regradeNotes, setRegradeNotes] = useState({});
   const [authUser, setAuthUser] = useState(getStoredAuthUser);
   const [authConfig, setAuthConfig] = useState({ googleClientId: "", allowedDomains: [] });
@@ -554,6 +673,18 @@ const handleSpeak = (text, index) => {
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [profileMenuOpen]);
+
+  useEffect(() => {
+    if (!answerPanelOpenFor) return;
+    document.getElementById(`answer-panel-${answerPanelOpenFor}`)
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [answerPanelOpenFor]);
+
+  useEffect(() => {
+    if (!questionPanelOpenFor) return;
+    document.getElementById(`question-panel-${questionPanelOpenFor}`)
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [questionPanelOpenFor]);
 
   useEffect(() => {
     const applyTheme = () => {
@@ -872,7 +1003,8 @@ const handleSpeak = (text, index) => {
   const overallTier = maxTotal ? getScoreTier(totalScore, maxTotal) : "mid";
 
   const studentIds = isBatch && response?.results ? Object.keys(response.results) : [];
-  const userDisplayName = authUser?.name || authUser?.email?.split("@")[0] || "Signed in";
+  const userFullName = authUser?.name || authUser?.email?.split("@")[0] || "Signed in";
+  const userDisplayName = userFullName.trim().split(/\s+/)[0];
   const userInitial = (authUser?.name || authUser?.email || "A").slice(0, 1).toUpperCase();
 
   const goToTab = (id) => {
@@ -1128,31 +1260,6 @@ const handleSpeak = (text, index) => {
               </div>
             </div>
 
-            <div className="field-block">
-              <span className="dropzone-label">Official Model Answer (optional, recommended)</span>
-              <label className="upload-pill">
-                <span className="upload-icon" aria-hidden="true"><Icon name="document" /></span>
-                <span className="upload-text">
-                  {modelAnswerFile ? modelAnswerFile.name : "Attach official answer key — PDF, image, or text"}
-                </span>
-                <input
-                  type="file"
-                  accept="image/*,.pdf,.docx,.txt"
-                  onChange={(e) => setModelAnswerFile(e.target.files?.[0] || null)}
-                />
-              </label>
-              {modelAnswerFile && (
-                <button className="remove-link" onClick={() => setModelAnswerFile(null)}>
-                  Remove model answer
-                </button>
-              )}
-              <textarea
-                placeholder="Or paste the official model answer here. This skips Gemini answer-key generation and saves cost."
-                value={modelAnswerText}
-                onChange={(e) => setModelAnswerText(e.target.value)}
-              />
-            </div>
-
             {answerFiles.length > 1 && (
               <p className="batch-hint">
                 Batch mode: {answerFiles.length} answer sheets will be graded against the same
@@ -1161,13 +1268,55 @@ const handleSpeak = (text, index) => {
               </p>
             )}
 
-            <div className="field-block">
-              <span className="dropzone-label">Custom grading instructions (optional)</span>
-              <textarea
-                placeholder="e.g., Be lenient on spelling, strictly evaluate math steps..."
-                value={additionalInstructions}
-                onChange={(e) => setAdditionalInstructions(e.target.value)}
-              />
+            <div className="optional-section">
+              <button
+                type="button"
+                className="optional-toggle"
+                onClick={() => setShowOptionalUpload((v) => !v)}
+                aria-expanded={showOptionalUpload}
+              >
+                <Icon name={showOptionalUpload ? "chevronUp" : "chevronDown"} />
+                <span>{showOptionalUpload ? "Hide optional grading details" : "Add optional grading details"}</span>
+                <span className="optional-toggle-hint">Model answer key · Custom instructions</span>
+              </button>
+
+              {showOptionalUpload && (
+                <div className="optional-body">
+                  <div className="field-block">
+                    <span className="dropzone-label">Official Model Answer (optional, recommended)</span>
+                    <label className="upload-pill">
+                      <span className="upload-icon" aria-hidden="true"><Icon name="document" /></span>
+                      <span className="upload-text">
+                        {modelAnswerFile ? modelAnswerFile.name : "Attach official answer key — PDF, image, or text"}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*,.pdf,.docx,.txt"
+                        onChange={(e) => setModelAnswerFile(e.target.files?.[0] || null)}
+                      />
+                    </label>
+                    {modelAnswerFile && (
+                      <button className="remove-link" onClick={() => setModelAnswerFile(null)}>
+                        Remove model answer
+                      </button>
+                    )}
+                    <textarea
+                      placeholder="Or paste the official model answer here. This skips Gemini answer-key generation and saves cost."
+                      value={modelAnswerText}
+                      onChange={(e) => setModelAnswerText(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="field-block">
+                    <span className="dropzone-label">Custom grading instructions (optional)</span>
+                    <textarea
+                      placeholder="e.g., Be lenient on spelling, strictly evaluate math steps..."
+                      value={additionalInstructions}
+                      onChange={(e) => setAdditionalInstructions(e.target.value)}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             {errorMsg && <p className="error-text">{errorMsg}</p>}
@@ -1311,7 +1460,7 @@ const handleSpeak = (text, index) => {
                       return (
                         <article className="result-card" key={qid}>
                           <div className="card-meta">
-                            <div>
+                            <div className="card-meta-title">
                               <h3>{item?.question_id || `Question ${idx + 1}`}</h3>
                               {item?.concept_tested && (
                                 <span className="concept-tag">{item.concept_tested}</span>
@@ -1322,18 +1471,17 @@ const handleSpeak = (text, index) => {
                             </span>
                           </div>
 
-                          <div className="feedback-box">
-                            {item?.feedback || "No feedback provided."}
-                          </div>
-
-                          {item?.actionable_takeaway && (
-                            <div className="actionable-takeaway-box">
-                              <span className="actionable-title">
-                                <Icon name="lightbulb" /> Next-Time Actionable Rule:
-                              </span>
-                              <p>{item.actionable_takeaway}</p>
+                          <div className="feedback-panel">
+                            <div className="feedback-text">
+                              <Markdown>{item?.feedback || "No feedback provided."}</Markdown>
                             </div>
-                          )}
+                            {item?.actionable_takeaway && (
+                              <div className="feedback-tip">
+                                <Icon name="lightbulb" />
+                                <Markdown>{item.actionable_takeaway}</Markdown>
+                              </div>
+                            )}
+                          </div>
 
                           {item?.criterion_scores?.length > 0 && (
                             <ul className="rubric-list">
@@ -1356,6 +1504,55 @@ const handleSpeak = (text, index) => {
                             </ul>
                           )}
 
+                          {(item?.question_text || item?.student_answer) && (
+                            <div className="answer-toggle-row">
+                              {item?.question_text && (
+                                <button
+                                  className="answer-toggle-btn"
+                                  onClick={() =>
+                                    setQuestionPanelOpenFor(questionPanelOpenFor === noteKey ? null : noteKey)
+                                  }
+                                >
+                                  <Icon name="document" />
+                                  {questionPanelOpenFor === noteKey ? "Hide question" : "View question"}
+                                  <Icon name={questionPanelOpenFor === noteKey ? "chevronUp" : "chevronDown"} />
+                                </button>
+                              )}
+                              {item?.student_answer && (
+                                <button
+                                  className="answer-toggle-btn"
+                                  onClick={() =>
+                                    setAnswerPanelOpenFor(answerPanelOpenFor === noteKey ? null : noteKey)
+                                  }
+                                >
+                                  <Icon name="note" />
+                                  {answerPanelOpenFor === noteKey ? "Hide your written answer" : "View your written answer"}
+                                  <Icon name={answerPanelOpenFor === noteKey ? "chevronUp" : "chevronDown"} />
+                                </button>
+                              )}
+
+                              {questionPanelOpenFor === noteKey && item?.question_text && (
+                                <div className="answer-panel" id={`question-panel-${noteKey}`}>
+                                  <p className="answer-panel-hint">The question as printed on the paper.</p>
+                                  <div className="answer-panel-body">
+                                    <Markdown>{item.question_text}</Markdown>
+                                  </div>
+                                </div>
+                              )}
+
+                              {answerPanelOpenFor === noteKey && item?.student_answer && (
+                                <div className="answer-panel" id={`answer-panel-${noteKey}`}>
+                                  <p className="answer-panel-hint">
+                                    Exactly what you wrote for this question, transcribed as-is.
+                                  </p>
+                                  <div className="answer-panel-body">
+                                    <Markdown>{item.student_answer}</Markdown>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           {note && !note.error && (
                             <div className={`regrade-note ${note.changed ? "regrade-note-changed" : ""}`}>
                               <strong>
@@ -1371,7 +1568,7 @@ const handleSpeak = (text, index) => {
                           <div className="regrade-block">
                             {!isOpen ? (
                               <button
-                                className="button button-ghost button-sm"
+                                className="button button-secondary button-sm"
                                 onClick={() => {
                                   setRegradeOpenFor(noteKey);
                                   setDispute({
@@ -1508,8 +1705,10 @@ const handleSpeak = (text, index) => {
                           {score.toFixed(1)} / {max.toFixed(0)}
                         </span>
                       </div>
-                      <div className="feedback-box">
-                        Question paper: <strong>{item.question_paper_filename || "Uploaded Paper"}</strong>
+                      <div className="feedback-panel">
+                        <div className="feedback-text">
+                          Question paper: <strong>{item.question_paper_filename || "Uploaded Paper"}</strong>
+                        </div>
                       </div>
                       <div className="actions">
                         <button
@@ -1560,10 +1759,10 @@ const handleSpeak = (text, index) => {
                         <div className="chat-bubble-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span className="chat-role">{msg.role === "user" ? "You" : "Agent"}</span>
                           {msg.role !== "user" && (
-                            <button 
-                              className={`listen-icon-btn ${speakingIndex === index ? "is-speaking" : ""}`}
-                              aria-label="Listen to response" 
-                              title="Listen"
+                            <button
+                              className={`listen-icon-btn ${speakingIndex === index ? "is-speaking" : ""} ${speechLoadingIndex === index ? "is-loading" : ""}`}
+                              aria-label={speechLoadingIndex === index ? "Generating audio…" : "Listen to response"}
+                              title={speechLoadingIndex === index ? "Generating audio…" : "Listen"}
                               onClick={() => handleSpeak(msg.content, index)}
                             >
                               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1574,9 +1773,7 @@ const handleSpeak = (text, index) => {
                             </button>
                           )}
                         </div>
-                        <div className="chat-markdown">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                        </div>
+                        <Markdown className="chat-markdown">{msg.content}</Markdown>
                       </div>
                     </div>
                   ))

@@ -62,6 +62,17 @@ class QuestionEvaluation(BaseModel):
         description="Core mathematical or scientific topic evaluated in this question.",
     )
     needs_human_review: bool = Field(default=False)
+    question_text: str = Field(
+        default="",
+        description="The exact question as printed in the question paper, copied verbatim.",
+    )
+    student_answer: str = Field(
+        default="",
+        description=(
+            "The complete verbatim text the student wrote in response to this specific "
+            "question only (not a short snippet, and not other questions' work)."
+        ),
+    )
 
     @model_validator(mode="after")
     def check_score_bound(self) -> "QuestionEvaluation":
@@ -215,13 +226,14 @@ def json_response(
     client: genai.Client,
     *,
     model: str,
-    prompt: str,
+    prompt: Optional[str] = None,
+    input_parts: Optional[list[dict[str, str]]] = None,
     schema: type[BaseModel],
 ) -> BaseModel:
     def request() -> BaseModel:
         interaction = client.interactions.create(
             model=model,
-            input=prompt,
+            input=input_parts if input_parts is not None else prompt,
             response_format={
                 "type": "text",
                 "mime_type": "application/json",
@@ -231,6 +243,20 @@ def json_response(
         return schema.model_validate_json(interaction.output_text)
 
     return call_with_retries(request, label="structured Gemini call")
+
+
+# Questions that ask for a drawn/hand-sketched answer (a construction, a labeled
+# diagram, a graph) can't be graded from the transcript alone — the transcript is
+# only ever the Transcriber's paraphrase of the sketch, not the sketch itself.
+DIAGRAM_KEYWORDS = (
+    "draw", "diagram", "sketch", "graph", "plot", "construct", "label the",
+    "figure", "shade", "mark the", "geometric construction",
+)
+
+
+def needs_visual_grading(question_paper: str, rubric: str) -> bool:
+    combined = f"{question_paper} {rubric}".lower()
+    return any(keyword in combined for keyword in DIAGRAM_KEYWORDS)
 
 
 # =====================================================================
@@ -333,12 +359,18 @@ class EvaluatorAgent:
         rubric: str,
         answer_key: str,
         student_work: str,
+        student_images: Optional[list[Image.Image]] = None,
+        student_pdf_bytes: Optional[bytes] = None,
     ) -> AssessmentReport:
         if not student_work.strip():
             raise ValueError(
                 "Cannot grade an empty student submission. No grade has been assigned."
             )
-        print(f"[Evaluator] Starting actionable evaluation with {GRADING_MODEL}")
+        has_visuals = bool(student_images) or bool(student_pdf_bytes)
+        print(
+            f"[Evaluator] Starting actionable evaluation with {GRADING_MODEL}"
+            + (" (with original pages attached for diagram grading)" if has_visuals else "")
+        )
         prompt = (
             "You are an academic evaluator producing rigorous, highly actionable, and growth-oriented feedback.\n\n"
             "GRADING & FEEDBACK REQUIREMENTS:\n"
@@ -350,19 +382,49 @@ class EvaluatorAgent:
             "   - 'actionable_takeaway': Provide 1 concrete, memorable rule or step the student should write next time to secure full marks (e.g., 'Always write out the elimination step 3x = 15 before stating x = 5').\n"
             "3. STRENGTHS & GROWTH AREAS: In the overall summary, identify 2-3 genuine conceptual strengths and 2-3 concrete execution habits to improve.\n"
             "4. ARITHMETIC INTEGRITY: Criterion scores must sum exactly to question score. Scores cannot exceed weights or max_score.\n"
-            "5. UNCERTAINTY: If handwriting is illegible or missing, mark needs_human_review=true rather than guessing.\n\n"
+            "5. UNCERTAINTY: If handwriting is illegible or missing, mark needs_human_review=true rather than guessing.\n"
+            "6. PER-QUESTION TEXT: For every question, also populate:\n"
+            "   - 'question_text': the exact question as printed in the QUESTION PAPER, copied verbatim (include sub-parts if any).\n"
+            "   - 'student_answer': the complete verbatim text the student wrote for THIS question only — copy their full "
+            "working/answer, not just a short snippet, and do not include any other question's work. If the student wrote "
+            "nothing for this question, leave it empty.\n"
+            "7. MATH FORMATTING: Write all mathematical notation in the student's work, question text, and your own feedback "
+            "using LaTeX delimited with '$' for inline math and '$$' for display math (e.g. '$x^2 - 5x + 6 = 0$'), so it "
+            "renders correctly. Do not use plain-text approximations like 'x^2' outside of '$...$'.\n"
+            + (
+                "8. GRADE THE ACTUAL DRAWING: The original submission pages are attached as images below, in addition "
+                "to the transcript. For any question asking for a diagram, sketch, construction, or graph, judge it "
+                "from the attached pages themselves — correct proportions, labeling, and construction — not from the "
+                "transcript's text description of it, which is only a paraphrase and may miss or misstate details.\n\n"
+                if has_visuals
+                else "\n"
+            )
             + UNTRUSTED_DATA_RULE
             + format_section("QUESTION PAPER", question_paper)
             + format_section("RUBRIC", rubric)
             + format_section("MASTER ANSWER KEY", answer_key)
-            + format_section("STUDENT SUBMISSION", student_work)
+            + format_section("STUDENT SUBMISSION (transcript)", student_work)
         )
-        report = json_response(
-            self.client,
-            model=GRADING_MODEL,
-            prompt=prompt,
-            schema=AssessmentReport,
-        )
+
+        if has_visuals:
+            input_parts: list[dict[str, str]] = [{"type": "text", "text": prompt}]
+            if student_pdf_bytes:
+                input_parts.append(pdf_input(student_pdf_bytes))
+            else:
+                input_parts.extend(image_input(image) for image in student_images)
+            report = json_response(
+                self.client,
+                model=GRADING_MODEL,
+                input_parts=input_parts,
+                schema=AssessmentReport,
+            )
+        else:
+            report = json_response(
+                self.client,
+                model=GRADING_MODEL,
+                prompt=prompt,
+                schema=AssessmentReport,
+            )
         assert isinstance(report, AssessmentReport)
         print(f"[Evaluator] Completed: {len(report.evaluations)} question(s) evaluated")
         return report
@@ -427,6 +489,7 @@ class MultiAgentAssessmentSystem:
             qp_transcription = self.transcriber.run_images(qp_images, "question-paper images")
             final_qp = f"{final_qp}\n\n{qp_transcription}".strip()
 
+        all_student_images = list(student_images or []) + list(images or [])
         if student_pdf_bytes:
             student_transcription = self.transcriber.run_pdf(
                 student_pdf_bytes,
@@ -434,7 +497,6 @@ class MultiAgentAssessmentSystem:
             )
             final_student = f"{final_student}\n\n{student_transcription}".strip()
         else:
-            all_student_images = list(student_images or []) + list(images or [])
             if all_student_images:
                 student_transcription = self.transcriber.run_images(
                     all_student_images,
@@ -461,7 +523,14 @@ class MultiAgentAssessmentSystem:
         else:
             answer_key = self.solver.run(final_qp, final_rubric)
 
-        report = self.evaluator.run(final_qp, final_rubric, answer_key, final_student)
+        if needs_visual_grading(final_qp, final_rubric):
+            report = self.evaluator.run(
+                final_qp, final_rubric, answer_key, final_student,
+                student_images=all_student_images or None,
+                student_pdf_bytes=student_pdf_bytes or None,
+            )
+        else:
+            report = self.evaluator.run(final_qp, final_rubric, answer_key, final_student)
         report = self.auditor.run(report)
 
         self.last_context = {
@@ -522,6 +591,11 @@ class MultiAgentAssessmentSystem:
             result.question.score = min(result.question.score, original.max_score)
             self.auditor.run(AssessmentReport(evaluations=[result.question]))
 
+        # The question text and the student's written answer are immutable facts —
+        # a regrade can change the score/feedback, never what was actually asked or written.
+        result.question.question_text = original.question_text
+        result.question.student_answer = original.student_answer
+
         for index, item in enumerate(report.evaluations):
             if item.question_id == question_id:
                 report.evaluations[index] = result.question
@@ -537,6 +611,17 @@ class MultiAgentAssessmentSystem:
             "You are the evaluator explaining an existing assessment. Provide encouraging, mathematically "
             "precise explanations grounded strictly in the rubric, answer key, and student work below. "
             "Highlight actionable study tips when asked how to improve.\n\n"
+            "BE CONCISE: Default to the shortest reply that fully answers the question — a few sentences, "
+            "not an essay. Skip preamble and restating the question. Don't repeat what the report already "
+            "shows the student unless they ask you to explain it. Use a list only when the content is truly "
+            "a list of distinct items.\n\n"
+            "TEACH, DON'T JUST TELL: For conceptual 'why' or 'how' questions, favor Socratic method — ask "
+            "one short guiding question or point at the specific step to re-examine, so the student reaches "
+            "the insight themselves, before giving the full explanation. Where useful, draw on other teaching "
+            "moves too: scaffolding (break a hard idea into one smaller first step), a worked near-example "
+            "(show the same technique on a simpler case, not the answer itself), and formative feedback "
+            "(name what's already correct before what's missing). Reserve plain, direct answers for factual "
+            "lookups (e.g. 'what did I score on Q3') where Socratic questioning would just be friction.\n\n"
             + UNTRUSTED_DATA_RULE
             + format_section("RUBRIC", context["rubric"])
             + format_section("MASTER ANSWER KEY", context["answer_key"])

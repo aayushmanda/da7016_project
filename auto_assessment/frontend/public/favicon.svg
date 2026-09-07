@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <style>
+    .brand-page { fill: #ffffff; stroke: #5f6368; stroke-width: 1.8; stroke-linejoin: round; }
+    .brand-fold { fill: #fff9f6; stroke: #5f6368; stroke-width: 1.8; stroke-linejoin: round; }
+    .brand-line { stroke: #80868b; stroke-width: 2; stroke-linecap: round; }
+    .brand-badge { fill: #ff7448; stroke: #ffffff; stroke-width: 2; }
+    .brand-check { stroke: #ffffff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+    @media (prefers-color-scheme: dark) {
+      .brand-page { fill: #202124; stroke: #c4c7c5; }
+      .brand-fold { fill: #2a211f; stroke: #c4c7c5; }
+      .brand-line { stroke: #9aa0a6; }
+      .brand-badge { fill: #ff8a63; stroke: #202124; }
+    }
+  </style>
+  <path class="brand-page" d="M10 5h19l8 8v30H10Z" />
+  <path class="brand-fold" d="M29 5v8h8Z" />
+  <line class="brand-line" x1="15" y1="18" x2="25" y2="18" />
+  <line class="brand-line" x1="15" y1="24" x2="25" y2="24" />
+  <line class="brand-line" x1="15" y1="30" x2="24" y2="30" />
+  <circle class="brand-badge" cx="33" cy="36" r="9" />
+  <path class="brand-check" d="M29 36.2 32 39.2 37.5 32.5" />
+</svg>

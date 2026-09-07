@@ -746,8 +746,15 @@ def _evaluate_batch_student(
     return report, context
 
 
-def load_assessment(assessment_id: str) -> AssessmentReport:
-    assessment_system = get_assessment_system()
+def load_assessment(assessment_id: str) -> tuple[AssessmentReport, dict]:
+    """
+    Loads an assessment fresh from the DB into a local dict, rather than
+    onto shared instance state — get_assessment_system() returns one
+    process-wide instance, so stashing "the current assessment" on it would
+    let concurrent requests from different users clobber each other's
+    context (see the comment on _evaluate_batch_student for the batch-mode
+    equivalent of this same rule).
+    """
     with sqlite3.connect(DB_PATH) as connection:
         row = connection.execute(
             "SELECT report_json, context_json FROM assessments WHERE assessment_id = ?",
@@ -759,18 +766,12 @@ def load_assessment(assessment_id: str) -> AssessmentReport:
     report = AssessmentReport.model_validate_json(row[0])
     context = json.loads(row[1])
     context["report"] = report
-    assessment_system.last_context = context
-    assessment_system.conversation_history = []
-    return report
+    return report, context
 
 
-def persist_current_report(assessment_id: str) -> None:
-    assessment_system = get_assessment_system()
-    if not assessment_system.last_context:
-        raise RuntimeError("No assessment context is loaded.")
-    report: AssessmentReport = assessment_system.last_context["report"]
+def persist_current_report(assessment_id: str, report: AssessmentReport, context: dict) -> None:
     score, max_score = _report_totals(report)
-    stored_context = dict(assessment_system.last_context)
+    stored_context = dict(context)
     stored_context["report"] = report.model_dump()
     with sqlite3.connect(DB_PATH) as connection:
         connection.execute(
@@ -1174,7 +1175,7 @@ async def assess_submission(request: Request):
             )
         assessment_system = get_assessment_system()
         prior_weak_areas = format_weak_areas_for_prompt(get_student_memory(user_email))
-        report = assessment_system.process_submission(
+        report, context = assessment_system.process_submission(
             **{
                 key: value
                 for key, value in payload.items()
@@ -1187,7 +1188,6 @@ async def assess_submission(request: Request):
             corrections_lookup=lambda qp: format_corrections_for_prompt(get_grading_corrections(qp)),
         )
 
-        context = assessment_system.last_context
         update_student_memory(user_email, report)
 
         assessment_id = save_assessment(
@@ -1202,24 +1202,6 @@ async def assess_submission(request: Request):
         response = _reshape_report(report, assessment_id)
         response["student_memory"] = get_student_memory(user_email)
         return response
-
-        # -----------------------------------------
-        # Save WITH session_id
-        # -----------------------------------------
-        context = assessment_system.last_context
-
-        assessment_id = save_assessment(
-            report,
-            context,
-            payload["question_paper_filename"],
-            payload["student_filename"],
-            session_id=session_id,
-        )
-
-        return _reshape_report(
-            report,
-            assessment_id,
-        )
 
     except HTTPException:
         raise
@@ -1279,7 +1261,7 @@ async def recent_assessments(request: Request, limit: int = 20,):
 
 @app.get("/api/assessments/{assessment_id}")
 async def get_assessment(assessment_id: str):
-    report = load_assessment(assessment_id)
+    report, _context = load_assessment(assessment_id)
     return _reshape_report(report, assessment_id)
 
 
@@ -1310,19 +1292,19 @@ async def regrade_question(request: Request):
         if len(claimed_mistake) < 8:
             raise HTTPException(status_code=400, detail="Describe a specific grading mistake (at least 8 characters).")
 
-        load_assessment(assessment_id)
+        _report, context = load_assessment(assessment_id)
         assessment_system = get_assessment_system()
         dispute = RegradeRequest(
             disputed_criterion=str(body.get("disputed_criterion") or "").strip() or None,
             claimed_mistake=claimed_mistake,
             evidence_quote=str(body.get("evidence_quote") or "").strip() or None,
         )
-        result = assessment_system.regrade_question(question_id, dispute)
-        persist_current_report(assessment_id)
+        result = assessment_system.regrade_question(context, question_id, dispute)
+        persist_current_report(assessment_id, context["report"], context)
 
         if result.claim_verified and result.changed:
             record_grading_correction(
-                question_paper=assessment_system.last_context["question_paper"],
+                question_paper=context["question_paper"],
                 disputed_criterion=dispute.disputed_criterion or "",
                 claimed_mistake=dispute.claimed_mistake,
                 evidence_quote=dispute.evidence_quote or "",
@@ -1334,7 +1316,7 @@ async def regrade_question(request: Request):
             "changed": result.changed,
             "claim_verified": result.claim_verified,
             "explanation": result.explanation,
-            "report": _reshape_report(assessment_system.last_context["report"], assessment_id),
+            "report": _reshape_report(context["report"], assessment_id),
         }
     except HTTPException:
         raise
@@ -1350,17 +1332,21 @@ async def chat_with_agent(request: Request):
         assessment_id = str(body.get("assessment_id") or "").strip()
         if not assessment_id:
             raise HTTPException(status_code=400, detail="assessment_id is required.")
-        load_assessment(assessment_id)
+        _report, context = load_assessment(assessment_id)
         assessment_system = get_assessment_system()
-        message = str(body.get("message") or body.get("user_message") or body.get("prompt") or "").strip()
-        if not message and isinstance(body.get("messages"), list):
-            for item in reversed(body["messages"]):
-                if isinstance(item, dict) and item.get("role") == "user":
-                    message = str(item.get("content") or "").strip()
-                    break
-        if not message:
-            raise HTTPException(status_code=400, detail="No chat message was provided.")
-        reply = assessment_system.verify_and_chat(message)
+
+        conversation = [
+            (str(item.get("role") or "user"), str(item.get("content") or "").strip())
+            for item in body.get("messages", [])
+            if isinstance(item, dict) and str(item.get("content") or "").strip()
+        ]
+        if not conversation:
+            message = str(body.get("message") or body.get("user_message") or body.get("prompt") or "").strip()
+            if not message:
+                raise HTTPException(status_code=400, detail="No chat message was provided.")
+            conversation = [("user", message)]
+
+        reply = assessment_system.verify_and_chat(context, conversation)
         return {"answer": reply, "response": reply, "reply": reply}
     except HTTPException:
         raise
@@ -1384,9 +1370,9 @@ async def chat_stream_with_agent(request: ChatRequest):
 
     try:
 
-        load_assessment(request.assessment_id)
+        _report, loaded_context = load_assessment(request.assessment_id)
         assessment_system = get_assessment_system()
-        context = assessment_system._chat_context()
+        context = assessment_system._chat_context(loaded_context)
 
         conversation = "\n".join(
             f"{message.role.upper()}: {message.content}"

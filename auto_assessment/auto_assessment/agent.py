@@ -5,7 +5,7 @@ import os
 import random
 import re
 import time
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Optional
 
 from google import genai
 from PIL import Image
@@ -475,8 +475,11 @@ class MultiAgentAssessmentSystem:
         self.solver = AnswerKeyAgent(self.client)
         self.evaluator = EvaluatorAgent(self.client)
         self.auditor = AuditAgent()
-        self.conversation_history: list[tuple[Literal["user", "assistant"], str]] = []
-        self.last_context: Optional[dict[str, Any]] = None
+        # Deliberately no last_context/conversation_history instance state here:
+        # callers (web.py) hold exactly one shared instance of this class across
+        # every request, so any "current assessment" stashed on self would leak
+        # between concurrent requests from different users. Every method below
+        # takes its context explicitly instead.
 
     def process_submission(
         self,
@@ -498,7 +501,7 @@ class MultiAgentAssessmentSystem:
         prior_weak_areas: str = "",
         corrections_lookup: Optional[Callable[[str], str]] = None,
         **_: Any,
-    ) -> AssessmentReport:
+    ) -> tuple[AssessmentReport, dict[str, Any]]:
         final_qp = (question_paper if question_paper_text is None else question_paper_text).strip()
         final_rubric = (rubric if rubric_text is None else rubric_text).strip()
         final_student = (student_text if student_answer_text is None else student_answer_text).strip()
@@ -556,30 +559,29 @@ class MultiAgentAssessmentSystem:
         )
         report = self.auditor.run(report)
 
-        self.last_context = {
+        context = {
             "question_paper": final_qp,
             "rubric": final_rubric,
             "answer_key": answer_key,
             "student_work": final_student,
             "report": report,
         }
-        self.conversation_history = []
         print("[Pipeline] Assessment complete")
-        return report
+        return report, context
 
     evaluate_submission = process_submission
 
-    def regrade_question(self, question_id: str, dispute: RegradeRequest) -> RegradeResult:
-        if not self.last_context:
+    def regrade_question(self, context: dict, question_id: str, dispute: RegradeRequest) -> RegradeResult:
+        if not context:
             raise RuntimeError("No completed assessment to regrade.")
 
-        report: AssessmentReport = self.last_context["report"]
+        report: AssessmentReport = context["report"]
         original = next((item for item in report.evaluations if item.question_id == question_id), None)
         if original is None:
             raise ValueError(f"Question {question_id!r} was not found.")
 
         if dispute.evidence_quote and normalize_for_match(dispute.evidence_quote) not in normalize_for_match(
-            self.last_context["student_work"]
+            context["student_work"]
         ):
             raise ValueError("The supplied evidence quote was not found in the student submission.")
 
@@ -589,10 +591,10 @@ class MultiAgentAssessmentSystem:
             "If claim_verified=false, reproduce the original question evaluation exactly and set "
             "changed=false. Never change the maximum score.\n\n"
             + UNTRUSTED_DATA_RULE
-            + format_section("QUESTION PAPER", self.last_context["question_paper"])
-            + format_section("RUBRIC", self.last_context["rubric"])
-            + format_section("MASTER ANSWER KEY", self.last_context["answer_key"])
-            + format_section("STUDENT SUBMISSION", self.last_context["student_work"])
+            + format_section("QUESTION PAPER", context["question_paper"])
+            + format_section("RUBRIC", context["rubric"])
+            + format_section("MASTER ANSWER KEY", context["answer_key"])
+            + format_section("STUDENT SUBMISSION", context["student_work"])
             + format_section("ORIGINAL QUESTION EVALUATION", original.model_dump_json(indent=2))
             + format_section("DISPUTED CRITERION", dispute.disputed_criterion or "Whole question")
             + format_section("CLAIMED MISTAKE", dispute.claimed_mistake)
@@ -623,13 +625,11 @@ class MultiAgentAssessmentSystem:
             if item.question_id == question_id:
                 report.evaluations[index] = result.question
                 break
-        self.conversation_history = []
         return result
 
-    def _chat_context(self) -> str:
-        if not self.last_context:
+    def _chat_context(self, context: dict) -> str:
+        if not context:
             raise RuntimeError("No completed assessment to chat about.")
-        context = self.last_context
         return (
             "You are the evaluator explaining an existing assessment. Provide encouraging, mathematically "
             "precise explanations grounded strictly in the rubric, answer key, and student work below. "
@@ -652,23 +652,24 @@ class MultiAgentAssessmentSystem:
             + format_section("GRADED REPORT", summarize_report(context["report"]))
         )
 
-    def verify_and_chat(self, user_message: str) -> str:
-        if not self.last_context:
-            raise RuntimeError("No completed assessment to chat about.")
-        self.conversation_history.append(("user", user_message))
+    def verify_and_chat(self, context: dict, conversation: list[tuple[str, str]]) -> str:
+        """
+        `conversation` is the full turn history (role, message) pairs, already
+        including the latest user message — the caller owns this history (it
+        comes from the frontend / DB, not instance state), since this same
+        agent instance is shared across every concurrent chat request.
+        """
         transcript = "\n".join(
             f"{role.upper()}: {message}"
-            for role, message in self.conversation_history[-8:]
+            for role, message in conversation[-8:]
         )
-        prompt = self._chat_context() + "\n=== CHAT TRANSCRIPT ===\n" + transcript
+        prompt = self._chat_context(context) + "\n=== CHAT TRANSCRIPT ===\n" + transcript
 
         def request() -> str:
             interaction = self.client.interactions.create(model=CHAT_MODEL, input=prompt)
             return interaction.output_text or ""
 
-        reply = call_with_retries(request, label="assessment chat").strip()
-        self.conversation_history.append(("assistant", reply))
-        return reply
+        return call_with_retries(request, label="assessment chat").strip()
 
 
 class RubricAssessmentAgent(MultiAgentAssessmentSystem):
@@ -676,10 +677,10 @@ class RubricAssessmentAgent(MultiAgentAssessmentSystem):
 
 if __name__ == "__main__":
     system = RubricAssessmentAgent()
-    report = system.evaluate_submission(
+    report, context = system.evaluate_submission(
         question_paper_text="Problem 1: Solve for x: 2x + 4 = 10.",
         rubric_text="Problem 1: 5 points: 3 for isolating x, 2 for the correct answer.",
         student_answer_text="Problem 1: 2x = 6, x = 3.",
     )
     print(json.dumps(report.model_dump(), indent=2))
-    print(system.verify_and_chat("Why did I lose points on Problem 1?"))
+    print(system.verify_and_chat(context, [("user", "Why did I lose points on Problem 1?")]))

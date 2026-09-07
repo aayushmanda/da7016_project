@@ -21,8 +21,11 @@ from document_parser import extract_content_from_file
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from google import genai
+from google.auth.transport import requests as google_auth_requests
+from google.oauth2 import id_token
 from google.genai import types
 from google.genai.types import LiveConnectConfig, Modality
+from dotenv import load_dotenv
 from agent import (
     AssessmentReport,
     RegradeRequest,
@@ -31,6 +34,8 @@ from agent import (
     GRADING_MODEL,
     CHAT_MODEL,
 )
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
 class ChatMessage(BaseModel):
@@ -41,6 +46,9 @@ class ChatRequest(BaseModel):
     assessment_id: Optional[str] = None
     messages: List[ChatMessage]
 
+class GoogleAuthRequest(BaseModel):
+    credential: str
+
 app = FastAPI(title="Auto Assessment API")
 app.add_middleware(
     CORSMiddleware,
@@ -50,11 +58,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-assessment_system = RubricAssessmentAgent()
 DB_PATH = Path(__file__).with_name("assessment_history.db")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_ALLOWED_DOMAINS = {
+    domain.strip().lower()
+    for domain in os.getenv("GOOGLE_ALLOWED_DOMAINS", "").split(",")
+    if domain.strip()
+}
 QUESTION_HINTS = ("question", "ques", "qp", "paper", "rubric")
 STUDENT_HINTS = ("student", "answer", "submission", "response", "solution")
 BATCH_CONCURRENCY = max(1, int(os.getenv("BATCH_CONCURRENCY", "3")))
+_assessment_system: Optional[RubricAssessmentAgent] = None
+
+
+def get_assessment_system() -> RubricAssessmentAgent:
+    global _assessment_system
+    if _assessment_system is None:
+        _assessment_system = RubricAssessmentAgent()
+    return _assessment_system
 
 
 def init_db() -> None:
@@ -174,10 +195,57 @@ def get_session_id(request: Request) -> str:
 
     return session_id
 
+
+@app.get("/api/auth/config")
+def get_auth_config() -> dict:
+    return {
+        "google_client_id": GOOGLE_CLIENT_ID,
+        "allowed_domains": sorted(GOOGLE_ALLOWED_DOMAINS),
+    }
+
+
+@app.post("/api/auth/google")
+def authenticate_google(payload: GoogleAuthRequest) -> dict:
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="GOOGLE_CLIENT_ID environment variable is missing.",
+        )
+
+    try:
+        claims = id_token.verify_oauth2_token(
+            payload.credential,
+            google_auth_requests.Request(),
+            GOOGLE_CLIENT_ID,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Invalid Google sign-in token: {exc}",
+        ) from exc
+
+    email = str(claims.get("email", "")).lower()
+    domain = email.split("@")[-1] if "@" in email else ""
+
+    if GOOGLE_ALLOWED_DOMAINS and domain not in GOOGLE_ALLOWED_DOMAINS:
+        raise HTTPException(
+            status_code=403,
+            detail="This Google account is not allowed to access AutoAssessment.",
+        )
+
+    return {
+        "user": {
+            "email": email,
+            "name": claims.get("name") or email,
+            "picture": claims.get("picture") or "",
+        }
+    }
+
 def _prepare_batch_shared_context(payload: dict) -> dict:
     """
     Process question paper/rubric/model answer exactly once for a batch.
     """
+    assessment_system = get_assessment_system()
     final_qp = payload["question_paper_text"].strip()
     final_rubric = payload["rubric_text"].strip()
 
@@ -361,6 +429,7 @@ def _evaluate_batch_student(
 
 
 def load_assessment(assessment_id: str) -> AssessmentReport:
+    assessment_system = get_assessment_system()
     with sqlite3.connect(DB_PATH) as connection:
         row = connection.execute(
             "SELECT report_json, context_json FROM assessments WHERE assessment_id = ?",
@@ -378,6 +447,7 @@ def load_assessment(assessment_id: str) -> AssessmentReport:
 
 
 def persist_current_report(assessment_id: str) -> None:
+    assessment_system = get_assessment_system()
     if not assessment_system.last_context:
         raise RuntimeError("No assessment context is loaded.")
     report: AssessmentReport = assessment_system.last_context["report"]
@@ -783,6 +853,7 @@ async def assess_submission(request: Request):
                 status_code=422,
                 detail="No readable student answer was provided.",
             )
+        assessment_system = get_assessment_system()
         report = assessment_system.process_submission(
             **{
                 key: value
@@ -904,6 +975,7 @@ async def regrade_question(request: Request):
             raise HTTPException(status_code=400, detail="Describe a specific grading mistake (at least 8 characters).")
 
         load_assessment(assessment_id)
+        assessment_system = get_assessment_system()
         dispute = RegradeRequest(
             disputed_criterion=str(body.get("disputed_criterion") or "").strip() or None,
             claimed_mistake=claimed_mistake,
@@ -933,6 +1005,7 @@ async def chat_with_agent(request: Request):
         if not assessment_id:
             raise HTTPException(status_code=400, detail="assessment_id is required.")
         load_assessment(assessment_id)
+        assessment_system = get_assessment_system()
         message = str(body.get("message") or body.get("user_message") or body.get("prompt") or "").strip()
         if not message and isinstance(body.get("messages"), list):
             for item in reversed(body["messages"]):
@@ -966,6 +1039,7 @@ async def chat_stream_with_agent(request: ChatRequest):
     try:
 
         load_assessment(request.assessment_id)
+        assessment_system = get_assessment_system()
         context = assessment_system._chat_context()
 
         conversation = "\n".join(

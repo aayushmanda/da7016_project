@@ -53,6 +53,59 @@ function Icon({ name, className }) {
     />
   </>
 ),
+    chevronDown: (
+      <>
+        <polyline points="6 9 12 15 18 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    chevronUp: (
+      <>
+        <polyline points="18 15 12 9 6 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    help: (
+      <>
+        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+        <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.3-3 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <circle cx="12" cy="17" r="1" fill="currentColor" />
+      </>
+    ),
+    logout: (
+      <>
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <polyline points="16 17 21 12 16 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <line x1="21" y1="12" x2="9" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    settings: (
+      <>
+        <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.5 1Z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    language: (
+      <>
+        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+        <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    monitor: (
+      <>
+        <rect x="3" y="4" width="18" height="13" rx="2" stroke="currentColor" strokeWidth="2" />
+        <path d="M8 21h8M12 17v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    sun: (
+      <>
+        <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="2" />
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </>
+    ),
+    moon: (
+      <>
+        <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.6 6.6 0 0 0 21 12.8Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
     score: (
       <>
         <line x1="18" y1="20" x2="18" y2="10" stroke="currentColor" strokeWidth="2" />
@@ -90,6 +143,13 @@ function Icon({ name, className }) {
         <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="2" />
         <path d="M9 3v18" stroke="currentColor" strokeWidth="2" />
         <path d="M15 15l-3-3 3-3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    sliderOpen: (
+    <>
+        <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="2" />
+        <path d="M15 3v18" stroke="currentColor" strokeWidth="2" />
+        <path d="M9 9l3 3-3 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       </>
     ),
     models: (
@@ -147,6 +207,25 @@ function Icon({ name, className }) {
   );
 }
 
+function BrandLogo({ showText = true }) {
+  return (
+    <span className={`brand-lockup ${showText ? "" : "brand-lockup-icon-only"}`}>
+      <span className="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 48 48" fill="none">
+          <path className="brand-page" d="M10 5h19l8 8v30H10Z" />
+          <path className="brand-fold" d="M29 5v8h8Z" />
+          <line className="brand-line" x1="15" y1="18" x2="25" y2="18" />
+          <line className="brand-line" x1="15" y1="24" x2="25" y2="24" />
+          <line className="brand-line" x1="15" y1="30" x2="24" y2="30" />
+          <circle className="brand-badge" cx="33" cy="36" r="9" />
+          <path className="brand-check" d="M29 36.2 32 39.2 37.5 32.5" />
+        </svg>
+      </span>
+      {showText && <span className="brand-name">AutoAssessment</span>}
+    </span>
+  );
+}
+
 function parseErrorMessage(status, rawDetail) {
   const text = String(rawDetail || "").trim();
   if (status === 429 || /rate.?limit/i.test(text)) {
@@ -186,6 +265,17 @@ function getSessionId() {
 }
 
 const SESSION_ID = getSessionId();
+const AUTH_STORAGE_KEY = "autoassessment_google_user";
+const THEME_STORAGE_KEY = "autoassessment_theme";
+
+function getStoredAuthUser() {
+  try {
+    return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "null");
+  } catch {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    return null;
+  }
+}
 
 
 export default function App() {
@@ -328,6 +418,17 @@ const handleSpeak = (text, index) => {
   const [dispute, setDispute] = useState(emptyDispute);
   const [regradeLoading, setRegradeLoading] = useState(null);
   const [regradeNotes, setRegradeNotes] = useState({});
+  const [authUser, setAuthUser] = useState(getStoredAuthUser);
+  const [authConfig, setAuthConfig] = useState({ googleClientId: "", allowedDomains: [] });
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [themeMode, setThemeMode] = useState(
+    () => localStorage.getItem(THEME_STORAGE_KEY) || "light"
+  );
+  const googleButtonRef = useRef(null);
+  const profileMenuRef = useRef(null);
   const getActiveAssessmentId = () => {
   if (isBatch) {
     return response?.results?.[selectedStudentId]?.assessment_id || null;
@@ -335,6 +436,133 @@ const handleSpeak = (text, index) => {
 
   return assessmentId;
 };
+
+  useEffect(() => {
+    fetch("/api/auth/config")
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error("Could not load Google sign-in configuration.");
+        }
+        return res.json();
+      })
+      .then((data) => {
+        setAuthConfig({
+          googleClientId: data.google_client_id || "",
+          allowedDomains: data.allowed_domains || [],
+        });
+      })
+      .catch((err) => {
+        setAuthError(err.message || "Could not load Google sign-in.");
+      });
+  }, []);
+
+  useEffect(() => {
+    if (authUser || !authConfig.googleClientId || !googleButtonRef.current) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const handleCredential = async (response) => {
+      if (!response?.credential) return;
+      setAuthLoading(true);
+      setAuthError("");
+
+      try {
+        const res = await fetch("/api/auth/google", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ credential: response.credential }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.detail || "Google sign-in failed.");
+        }
+
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(data.user));
+        setAuthUser(data.user);
+        setAvatarFailed(false);
+      } catch (err) {
+        setAuthError(err.message || "Google sign-in failed.");
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+
+    const renderGoogleButton = () => {
+      if (cancelled || !window.google?.accounts?.id || !googleButtonRef.current) {
+        return;
+      }
+
+      googleButtonRef.current.innerHTML = "";
+      window.google.accounts.id.initialize({
+        client_id: authConfig.googleClientId,
+        callback: handleCredential,
+      });
+      window.google.accounts.id.renderButton(googleButtonRef.current, {
+        theme: "outline",
+        size: "large",
+        shape: "pill",
+        width: 280,
+        text: "signin_with",
+      });
+    };
+
+    if (window.google?.accounts?.id) {
+      renderGoogleButton();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const existingScript = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
+    const script = existingScript || document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.onload = renderGoogleButton;
+    script.onerror = () => setAuthError("Could not load Google sign-in. Check your internet connection.");
+
+    if (!existingScript) {
+      document.body.appendChild(script);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authConfig.googleClientId, authUser]);
+
+  const handleSignOut = () => {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    window.google?.accounts?.id?.disableAutoSelect?.();
+    setAuthUser(null);
+    setAvatarFailed(false);
+    setProfileMenuOpen(false);
+  };
+
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+
+    const handlePointerDown = (event) => {
+      if (!profileMenuRef.current?.contains(event.target)) {
+        setProfileMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [profileMenuOpen]);
+
+  useEffect(() => {
+    const applyTheme = () => {
+      document.documentElement.dataset.theme = themeMode;
+      localStorage.setItem(THEME_STORAGE_KEY, themeMode);
+    };
+
+    applyTheme();
+  }, [themeMode]);
 
   useEffect(() => {
     if (chatWindowRef.current) {
@@ -644,9 +872,12 @@ const handleSpeak = (text, index) => {
   const overallTier = maxTotal ? getScoreTier(totalScore, maxTotal) : "mid";
 
   const studentIds = isBatch && response?.results ? Object.keys(response.results) : [];
+  const userDisplayName = authUser?.name || authUser?.email?.split("@")[0] || "Signed in";
+  const userInitial = (authUser?.name || authUser?.email || "A").slice(0, 1).toUpperCase();
 
   const goToTab = (id) => {
     setActiveTab(id);
+    setProfileMenuOpen(false);
 
     if (id === "results") {
       setHasNewResult(false);
@@ -661,19 +892,39 @@ const handleSpeak = (text, index) => {
     }
   };
 
+  if (!authUser) {
+    return (
+      <main className="login-shell">
+        <section className="login-panel">
+          <div className="login-brand">
+            <BrandLogo />
+          </div>
+
+          {authConfig.googleClientId ? (
+            <div className="google-login-box">
+              <div ref={googleButtonRef} className="google-login-button" />
+              {authLoading && <p className="auth-note">Signing you in...</p>}
+            </div>
+          ) : (
+            <div className="auth-config-warning">
+              <strong>Google sign-in is not configured.</strong>
+              <span>Set GOOGLE_CLIENT_ID in your .env file, then restart the app.</span>
+            </div>
+          )}
+
+          {authError && <p className="error-text">{authError}</p>}
+        </section>
+      </main>
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
         <div className="sidebar-brand">
           {sidebarOpen ? (
             <>
-              <span className="brand-mark" aria-hidden="true">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                  <path d="M12 2 3 7l9 5 9-5-9-5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-                  <path d="M6 10.5v5c0 .5 2.6 2.5 6 2.5s6-2 6-2.5v-5" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-                </svg>
-              </span>
-              <span className="brand-name">AutoAssessment</span>
+              <BrandLogo />
               <button
                 className="sidebar-toggle"
                 onClick={() => setSidebarOpen(false)}
@@ -690,10 +941,7 @@ const handleSpeak = (text, index) => {
               aria-label="Expand sidebar"
               title="Expand sidebar"
             >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <path d="M12 2 3 7l9 5 9-5-9-5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-                <path d="M6 10.5v5c0 .5 2.6 2.5 6 2.5s6-2 6-2.5v-5" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-              </svg>
+              <BrandLogo showText={false} />
             </button>
           )}
         </div>
@@ -722,6 +970,82 @@ const handleSpeak = (text, index) => {
       </aside>
 
       <main className="app-main">
+        <header className="app-topbar">
+          <div className="topbar-actions">
+            <div className="profile-menu" ref={profileMenuRef}>
+              <button
+                className={`profile-pill ${profileMenuOpen ? "profile-pill-open" : ""}`}
+                type="button"
+                onClick={() => setProfileMenuOpen((open) => !open)}
+                aria-haspopup="menu"
+                aria-expanded={profileMenuOpen}
+              >
+                {authUser.picture && !avatarFailed ? (
+                  <img
+                    src={authUser.picture}
+                    alt=""
+                    className="profile-avatar profile-avatar-image"
+                    referrerPolicy="no-referrer"
+                    onError={() => setAvatarFailed(true)}
+                  />
+                ) : (
+                  <span className="profile-avatar profile-avatar-fallback">{userInitial}</span>
+                )}
+                <span className="profile-pill-name">{userDisplayName}</span>
+                <Icon name={profileMenuOpen ? "chevronUp" : "chevronDown"} />
+              </button>
+
+              {profileMenuOpen && (
+                <div className="profile-popover" role="menu">
+                  <div className="profile-popover-header">
+                    {authUser.picture && !avatarFailed ? (
+                      <img
+                        src={authUser.picture}
+                        alt=""
+                        className="profile-avatar profile-avatar-large profile-avatar-image"
+                        referrerPolicy="no-referrer"
+                        onError={() => setAvatarFailed(true)}
+                      />
+                    ) : (
+                      <span className="profile-avatar profile-avatar-large profile-avatar-fallback">
+                        {userInitial}
+                      </span>
+                    )}
+                    <div className="profile-popover-meta">
+                      <strong>{userDisplayName}</strong>
+                      <span>{authUser.email}</span>
+                    </div>
+                  </div>
+
+                  <div className="profile-theme-row" aria-label="Theme">
+                    <button
+                      className={`profile-theme-option ${themeMode === "light" ? "profile-theme-option-active" : ""}`}
+                      type="button"
+                      onClick={() => setThemeMode("light")}
+                    >
+                      <Icon name="sun" />
+                      <span>Light</span>
+                    </button>
+                    <button
+                      className={`profile-theme-option ${themeMode === "dark" ? "profile-theme-option-active" : ""}`}
+                      type="button"
+                      onClick={() => setThemeMode("dark")}
+                    >
+                      <Icon name="moon" />
+                      <span>Dark</span>
+                    </button>
+                  </div>
+
+                  <button className="profile-menu-item profile-menu-item-danger" type="button" role="menuitem" onClick={handleSignOut}>
+                    <Icon name="logout" />
+                    <span>Sign out</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </header>
+
         {activeTab === "upload" && (
           <section className="view">
             <header className="view-header">

@@ -265,6 +265,18 @@ function getScoreTier(score, max) {
   return "low";
 }
 
+// Rendered via <img src="data:image/svg+xml;base64,...">, never inline/dangerouslySetInnerHTML —
+// browsers treat an <img>-loaded SVG as a static raster image and never execute anything inside
+// it (scripts, event handlers), regardless of what a model-generated SVG string might contain.
+function svgToDataUri(svg) {
+  if (!svg) return "";
+  try {
+    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
+  } catch {
+    return "";
+  }
+}
+
 const emptyDispute = { disputed_criterion: "", claimed_mistake: "", evidence_quote: "" };
 
 
@@ -544,6 +556,7 @@ const handleSpeak = (text, index) => {
   const [regradeLoading, setRegradeLoading] = useState(null);
   const [answerPanelOpenFor, setAnswerPanelOpenFor] = useState(null);
   const [questionPanelOpenFor, setQuestionPanelOpenFor] = useState(null);
+  const [diagramPanelOpenFor, setDiagramPanelOpenFor] = useState(null);
   const [regradeNotes, setRegradeNotes] = useState({});
   const [authUser, setAuthUser] = useState(getStoredAuthUser);
   const [authConfig, setAuthConfig] = useState({ googleClientId: "", allowedDomains: [] });
@@ -695,6 +708,12 @@ const handleSpeak = (text, index) => {
     document.getElementById(`question-panel-${questionPanelOpenFor}`)
       ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [questionPanelOpenFor]);
+
+  useEffect(() => {
+    if (!diagramPanelOpenFor) return;
+    document.getElementById(`diagram-panel-${diagramPanelOpenFor}`)
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [diagramPanelOpenFor]);
 
   useEffect(() => {
     const applyTheme = () => {
@@ -1568,7 +1587,7 @@ const handleSpeak = (text, index) => {
                             </ul>
                           )}
 
-                          {(item?.question_text || item?.student_answer) && (
+                          {(item?.question_text || item?.student_answer || item?.reference_diagram_svg) && (
                             <div className="answer-toggle-row">
                               {item?.question_text && (
                                 <button
@@ -1594,6 +1613,18 @@ const handleSpeak = (text, index) => {
                                   <Icon name={answerPanelOpenFor === noteKey ? "chevronUp" : "chevronDown"} />
                                 </button>
                               )}
+                              {item?.reference_diagram_svg && (
+                                <button
+                                  className="answer-toggle-btn"
+                                  onClick={() =>
+                                    setDiagramPanelOpenFor(diagramPanelOpenFor === noteKey ? null : noteKey)
+                                  }
+                                >
+                                  <Icon name="models" />
+                                  {diagramPanelOpenFor === noteKey ? "Hide reference diagram" : "View reference diagram"}
+                                  <Icon name={diagramPanelOpenFor === noteKey ? "chevronUp" : "chevronDown"} />
+                                </button>
+                              )}
 
                               {questionPanelOpenFor === noteKey && item?.question_text && (
                                 <div className="answer-panel" id={`question-panel-${noteKey}`}>
@@ -1611,6 +1642,18 @@ const handleSpeak = (text, index) => {
                                   </p>
                                   <div className="answer-panel-body">
                                     <Markdown>{item.student_answer}</Markdown>
+                                  </div>
+                                </div>
+                              )}
+
+                              {diagramPanelOpenFor === noteKey && item?.reference_diagram_svg && (
+                                <div className="answer-panel" id={`diagram-panel-${noteKey}`}>
+                                  <p className="answer-panel-hint">What a correct diagram for this question looks like.</p>
+                                  <div className="answer-panel-body diagram-panel-body">
+                                    <img
+                                      src={svgToDataUri(item.reference_diagram_svg)}
+                                      alt={`Reference diagram for ${item?.question_id || "this question"}`}
+                                    />
                                   </div>
                                 </div>
                               )}

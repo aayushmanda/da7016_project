@@ -5,12 +5,6 @@
     .brand-line { stroke: #80868b; stroke-width: 2; stroke-linecap: round; }
     .brand-badge { fill: #ff7448; stroke: #ffffff; stroke-width: 2; }
     .brand-check { stroke: #ffffff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; fill: none; }
-    @media (prefers-color-scheme: dark) {
-      .brand-page { fill: #202124; stroke: #c4c7c5; }
-      .brand-fold { fill: #2a211f; stroke: #c4c7c5; }
-      .brand-line { stroke: #9aa0a6; }
-      .brand-badge { fill: #ff8a63; stroke: #202124; }
-    }
   </style>
   <path class="brand-page" d="M10 5h19l8 8v30H10Z" />
   <path class="brand-fold" d="M29 5v8h8Z" />

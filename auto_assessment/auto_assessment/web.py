@@ -65,7 +65,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_PATH = Path(__file__).with_name("assessment_history.db")
+_db_path_override = os.getenv("DB_PATH", "").strip()
+DB_PATH = Path(_db_path_override) if _db_path_override else Path(__file__).with_name("assessment_history.db")
 BODHAN_API_KEY = os.getenv("BODHAN_API_KEY", "").strip()
 BODHAN_BASE_URL = "https://api.bodhan.ai/v1"
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
@@ -623,10 +624,20 @@ def _prepare_batch_shared_context(payload: dict) -> dict:
     else:
         print("[Batch] Using supplied master answer key")
 
+    # Reference diagrams don't depend on any one student's work, so generate
+    # them once here too, rather than once per student.
+    reference_diagrams: dict[str, str] = {}
+    if needs_visual_grading(final_qp, final_rubric):
+        print("[Batch] Generating shared reference diagrams")
+        reference_diagrams = assessment_system.evaluator.generate_reference_diagrams(
+            final_qp, final_rubric
+        )
+
     return {
         "question_paper": final_qp,
         "rubric": final_rubric,
         "answer_key": answer_key,
+        "reference_diagrams": reference_diagrams,
     }
 
 
@@ -734,6 +745,11 @@ def _evaluate_batch_student(
         )
 
     report = worker.auditor.run(report)
+
+    reference_diagrams = shared.get("reference_diagrams") or {}
+    for item in report.evaluations:
+        if item.question_id in reference_diagrams:
+            item.reference_diagram_svg = reference_diagrams[item.question_id]
 
     context = {
         "question_paper": shared["question_paper"],

@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - BATCH_CONCURRENCY=${BATCH_CONCURRENCY:-3}
+      - MAX_BATCH_SIZE=${MAX_BATCH_SIZE:-25}
+    volumes:
+      - db_data:/data
+    ports:
+      - "8001:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./auto_assessment/frontend
+      dockerfile: Dockerfile
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  db_data:

@@ -73,6 +73,14 @@ class QuestionEvaluation(BaseModel):
             "question only (not a short snippet, and not other questions' work)."
         ),
     )
+    reference_diagram_svg: str = Field(
+        default="",
+        description=(
+            "For questions asking for a drawn diagram/sketch/construction/graph only: a complete, "
+            "correct, precisely labeled SVG string (viewBox '0 0 200 200') showing what the correct "
+            "answer should look like. Empty for every other question."
+        ),
+    )
 
     @model_validator(mode="after")
     def check_score_bound(self) -> "QuestionEvaluation":
@@ -92,6 +100,15 @@ class AssessmentReport(BaseModel):
         default_factory=list,
         description="Top 2-3 specific topics or execution habits to improve.",
     )
+
+
+class DiagramEntry(BaseModel):
+    question_id: str
+    svg: str = Field(default="", description="Empty if this question does not call for a drawing.")
+
+
+class ReferenceDiagramSet(BaseModel):
+    diagrams: list[DiagramEntry] = Field(default_factory=list)
 
 
 class RegradeRequest(BaseModel):
@@ -196,6 +213,29 @@ def validate_report(report: AssessmentReport, tolerance: float = 0.01) -> list[s
 
 def normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
+
+
+_SVG_DANGEROUS_PATTERN = re.compile(
+    r"<\s*script|<\s*foreignobject|<\s*iframe|on[a-z]+\s*=|javascript:|xlink:href\s*=\s*[\"']https?://|href\s*=\s*[\"']https?://",
+    re.IGNORECASE,
+)
+
+
+def sanitize_reference_svg(svg: str) -> str:
+    """
+    Defense in depth for LLM-generated SVG that gets rendered client-side:
+    the prompt already tells the model not to include scripts/handlers/
+    external refs, but a prompt instruction is not a security boundary, so
+    anything that looks even slightly off gets dropped rather than shown.
+    """
+    svg = (svg or "").strip()
+    if not svg:
+        return ""
+    if "<svg" not in svg.lower():
+        return ""
+    if _SVG_DANGEROUS_PATTERN.search(svg):
+        return ""
+    return svg
 
 
 def _status_code(error: Exception) -> Optional[int]:
@@ -449,6 +489,53 @@ class EvaluatorAgent:
         print(f"[Evaluator] Completed: {len(report.evaluations)} question(s) evaluated")
         return report
 
+    def generate_reference_diagrams(self, question_paper: str, rubric: str) -> dict[str, str]:
+        """
+        A separate, isolated call for reference diagrams — bundling this into the
+        main grading call's schema measurably hurt grading reliability (the model
+        would occasionally return zero evaluations rather than one with a
+        populated reference_diagram_svg). Diagrams are a nice-to-have on top of
+        grading, so a failure here must never affect grading: any exception, or
+        any per-question SVG that fails sanitize_reference_svg, is dropped
+        rather than propagated.
+
+        Identifies its own question IDs from the question paper (the same
+        document the Evaluator reads), rather than requiring a pre-graded
+        list — this lets it run once per question paper, shared across every
+        student in a batch, instead of once per student.
+        """
+        prompt = (
+            "Read the question paper below and identify every question ID that asks the student to "
+            "draw a diagram, sketch, geometric construction, or graph — use the exact same question "
+            "ID labels as printed in the paper (e.g. '7' or 'Problem 3'). For each one, produce a "
+            "complete, correct, precisely labeled SVG string showing what a correct answer looks "
+            "like — matching labels and geometrically consistent coordinates (e.g. a circle's radius "
+            "line must actually span half its drawn diameter), not just something visually plausible. "
+            "Use viewBox '0 0 200 200', a white background rect, black strokes, and plain "
+            "<circle>/<line>/<path>/<text>/<polygon> elements only. Never include <script>, on*= "
+            "event-handler attributes, <foreignObject>, or any external references (href/src to a "
+            "URL). Do not include any question that doesn't call for a drawing.\n\n"
+            + format_section("QUESTION PAPER", question_paper)
+            + format_section("RUBRIC", rubric)
+        )
+        try:
+            result = json_response(
+                self.client,
+                model=GRADING_MODEL,
+                prompt=prompt,
+                schema=ReferenceDiagramSet,
+            )
+            assert isinstance(result, ReferenceDiagramSet)
+        except Exception as error:
+            print(f"[Evaluator] Reference diagram generation failed, skipping: {error}")
+            return {}
+
+        return {
+            entry.question_id: sanitize_reference_svg(entry.svg)
+            for entry in result.diagrams
+            if sanitize_reference_svg(entry.svg)
+        }
+
 
 class AuditAgent:
     """Deterministic audit; verifies arithmetic invariants without extra LLM cost."""
@@ -559,6 +646,12 @@ class MultiAgentAssessmentSystem:
         )
         report = self.auditor.run(report)
 
+        if visual_grading:
+            diagrams = self.evaluator.generate_reference_diagrams(final_qp, final_rubric)
+            for item in report.evaluations:
+                if item.question_id in diagrams:
+                    item.reference_diagram_svg = diagrams[item.question_id]
+
         context = {
             "question_paper": final_qp,
             "rubric": final_rubric,
@@ -616,10 +709,12 @@ class MultiAgentAssessmentSystem:
             result.question.score = min(result.question.score, original.max_score)
             self.auditor.run(AssessmentReport(evaluations=[result.question]))
 
-        # The question text and the student's written answer are immutable facts —
-        # a regrade can change the score/feedback, never what was actually asked or written.
+        # The question text, the student's written answer, and the reference diagram are
+        # immutable facts — a regrade can change the score/feedback, never what was actually
+        # asked, written, or the correct diagram for the question.
         result.question.question_text = original.question_text
         result.question.student_answer = original.student_answer
+        result.question.reference_diagram_svg = original.reference_diagram_svg
 
         for index, item in enumerate(report.evaluations):
             if item.question_id == question_id:

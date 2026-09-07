@@ -82,6 +82,14 @@ Frontend: `http://localhost:5173` (proxies `/api` to the backend) · Backend doc
 
 Or use `./start.sh` from the repo root to launch both together.
 
+### Docker
+
+```bash
+docker compose up -d --build
+```
+
+Frontend: `http://localhost:8080` (nginx, proxies `/api` and `/ws` to the backend container) · Backend directly: `http://localhost:8001`. SQLite data persists in a named volume (`db_data`) across rebuilds. Requires `.env` in the repo root (same variables as above) — `docker-compose.yml` loads it via `env_file`.
+
 ---
 
 ## Using the app
@@ -149,8 +157,12 @@ da7016_project/
 │   └── frontend/
 │       ├── src/App.jsx
 │       ├── src/styles.css
-│       └── package.json
+│       ├── package.json
+│       ├── Dockerfile          # build → nginx static + /api, /ws proxy
+│       └── nginx.conf
 ├── requirements.txt
+├── Dockerfile                  # backend image
+├── docker-compose.yml
 ├── start.sh
 └── LICENSE
 ```

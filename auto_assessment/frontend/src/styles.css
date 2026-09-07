@@ -360,13 +360,48 @@ img, svg { max-width: 100%; }
   display: none;
 }
 
-.sidebar-collapsed .sidebar-toggle {
+.brand-mark-toggle {
+  position: relative;
+  border: none;
+  padding: 0;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.brand-mark-toggle:hover,
+.brand-mark-toggle:focus-visible {
+  background: var(--brand-primary-soft);
+}
+
+.brand-mark-face {
   position: absolute;
-  right: -15px;
-  top: 4px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  box-shadow: 0 2px 8px rgba(32, 33, 36, 0.08);
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s ease;
+}
+
+.brand-mark-expand {
+  opacity: 0;
+  color: var(--ink-faint);
+}
+
+.brand-mark-expand svg {
+  width: 20px;
+  height: 20px;
+}
+
+.brand-mark-toggle:hover .brand-mark-logo,
+.brand-mark-toggle:focus-visible .brand-mark-logo {
+  opacity: 0;
+}
+
+.brand-mark-toggle:hover .brand-mark-expand,
+.brand-mark-toggle:focus-visible .brand-mark-expand {
+  opacity: 1;
+  color: var(--brand-primary-dark);
 }
 
 .sidebar-collapsed .sidebar-nav {

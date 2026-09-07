@@ -941,7 +941,12 @@ const handleSpeak = (text, index) => {
               aria-label="Expand sidebar"
               title="Expand sidebar"
             >
-              <BrandLogo showText={false} />
+              <span className="brand-mark-face brand-mark-logo">
+                <BrandLogo showText={false} />
+              </span>
+              <span className="brand-mark-face brand-mark-expand">
+                <Icon name="sliderOpen" />
+              </span>
             </button>
           )}
         </div>

@@ -18,6 +18,32 @@ function Markdown({ children, className = "" }) {
   );
 }
 
+function OcrEditorField({ label, value, placeholder = "", onChange }) {
+  return (
+    <label className="ocr-editor-field">
+      <span>{label}</span>
+      <div className="ocr-editor-column-heads" aria-hidden="true">
+        <span>Edit OCR text</span>
+        <span>Rendered math preview</span>
+      </div>
+      <div className="ocr-editor-grid">
+        <textarea
+          value={value}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <div className="ocr-rendered-preview">
+          {value?.trim() ? (
+            <Markdown>{value}</Markdown>
+          ) : (
+            <p className="ocr-rendered-empty">No text to preview.</p>
+          )}
+        </div>
+      </div>
+    </label>
+  );
+}
+
 
 const NAV_ITEMS = [
   { id: "upload", label: "Upload", icon: "upload" },
@@ -256,6 +282,43 @@ function parseErrorMessage(status, rawDetail) {
   return text || "An unexpected error occurred.";
 }
 
+function getOcrDraftTexts(draft) {
+  if (!draft) return [];
+  return [
+    draft.questionPaper,
+    draft.studentAnswer,
+    draft.modelAnswer,
+    ...(draft.answers || []).map((answer) => answer.student_answer_text),
+  ].filter((text) => String(text || "").trim());
+}
+
+function getOcrQualityWarnings(draft) {
+  const warnings = [];
+  const texts = getOcrDraftTexts(draft);
+  const joined = texts.join("\n\n");
+  if (!joined.trim()) return warnings;
+
+  if (/ocr failed|error code|api error|unauthorized|forbidden|key not allowed/i.test(joined)) {
+    warnings.push("OCR contains an API/error message. Re-run OCR or replace that section before grading.");
+  }
+  if (joined.length < 160) {
+    warnings.push("Extraction looks very short. Check that the full question paper and answer sheet were read.");
+  }
+  if ((joined.match(/\?/g) || []).length >= 8 || /�/.test(joined)) {
+    warnings.push("Some characters look uncertain. Review names, numbers, and formulas carefully.");
+  }
+  const dollarCount = (joined.match(/\$/g) || []).length;
+  if (dollarCount % 2 === 1) {
+    warnings.push("Math delimiters look unbalanced. Fix any missing $ symbols before grading.");
+  }
+  const numberedItems = (joined.match(/(^|\n)\s*\d+[\).]/g) || []).length;
+  if (numberedItems < 2) {
+    warnings.push("Few question numbers were detected. Confirm that questions and answers are separated clearly.");
+  }
+
+  return warnings;
+}
+
 function getScoreTier(score, max) {
   const safeMax = max || 0;
   if (safeMax <= 0) return "mid";
@@ -295,6 +358,13 @@ const SESSION_ID = getSessionId();
 const AUTH_STORAGE_KEY = "autoassessment_google_user";
 const AUTH_TOKEN_KEY = "autoassessment_session_token";
 const THEME_STORAGE_KEY = "autoassessment_theme";
+const WORKFLOW_STEPS = [
+  { id: "uploading", label: "Uploading", detail: "Securing files" },
+  { id: "ocr", label: "Reading work", detail: "Extracting text and math" },
+  { id: "answer-key", label: "Answer key", detail: "Building reference solution" },
+  { id: "grading", label: "Evaluating", detail: "Checking rubric evidence" },
+  { id: "auditing", label: "Auditing", detail: "Validating totals" },
+];
 
 function getStoredAuthUser() {
   try {
@@ -310,6 +380,495 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+function formatNumber(value, digits = 1) {
+  const number = Number(value || 0);
+  if (Number.isInteger(number)) return String(number);
+  return number.toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+}
+
+function formatScore(score, maxScore) {
+  return `${formatNumber(score)} / ${formatNumber(maxScore)}`;
+}
+
+function reportToMarkdown(report) {
+  if (!report) return "";
+  const rows = report.result || report.evaluations || [];
+  const lines = [
+    "# AutoAssessment Report",
+    "",
+    `Overall summary: ${report.overall_summary || "No summary provided."}`,
+    "",
+  ];
+
+  if (report.strengths?.length) {
+    lines.push("## Strengths", ...report.strengths.map((item) => `- ${item}`), "");
+  }
+
+  if (report.priority_growth_areas?.length) {
+    lines.push("## Priority Growth Areas", ...report.priority_growth_areas.map((item) => `- ${item}`), "");
+  }
+
+  lines.push("## Question Scores", "");
+  rows.forEach((item, index) => {
+    lines.push(`### ${item.question_id || `Question ${index + 1}`}`);
+    lines.push(`Score: ${formatScore(item.score, item.max_score)}`);
+    if (item.concept_tested) lines.push(`Concept: ${item.concept_tested}`);
+    if (item.feedback) lines.push("", item.feedback);
+    if (item.actionable_takeaway) lines.push("", `Takeaway: ${item.actionable_takeaway}`);
+    if (item.criterion_scores?.length) {
+      lines.push("", "Criteria:");
+      item.criterion_scores.forEach((crit) => {
+        lines.push(`- ${crit.description}: ${formatScore(crit.score, crit.weight)}${crit.evidence_quote ? ` | Evidence: "${crit.evidence_quote}"` : ""}`);
+      });
+    }
+    lines.push("");
+  });
+  return lines.join("\n");
+}
+
+function reportToHtml(report, { studentName = "", generatedAt = new Date(), printMode = false } = {}) {
+  if (!report) return "";
+  const rows = report.result || report.evaluations || [];
+  const totalScore = rows.reduce((sum, item) => sum + Number(item?.score || 0), 0);
+  const maxScore = rows.reduce((sum, item) => sum + Number(item?.max_score || item?.maxScore || 0), 0);
+  const average = maxScore ? formatNumber((totalScore / maxScore) * 10) : "0";
+  const generatedLabel = generatedAt.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const listSection = (title, items, emptyText) => `
+    <section class="report-section">
+      <h2>${escapeHtml(title)}</h2>
+      ${
+        items?.length
+          ? `<ul class="clean-list">${items.map((item) => `<li>${richText(item)}</li>`).join("")}</ul>`
+          : `<p class="muted">${escapeHtml(emptyText)}</p>`
+      }
+    </section>
+  `;
+
+  const questionSections = rows.map((item, index) => {
+    const qid = item?.question_id || `Question ${index + 1}`;
+    const itemMax = Number(item?.max_score || 0);
+    const itemScore = Number(item?.score || 0);
+    const criteria = item?.criterion_scores || [];
+
+    return `
+      <article class="question-block">
+        <div class="question-header">
+          <div>
+            <p class="eyebrow">Question ${index + 1}</p>
+            <h2>${escapeHtml(qid)}</h2>
+            ${item?.concept_tested ? `<p class="concept">${escapeHtml(item.concept_tested)}</p>` : ""}
+          </div>
+          <div class="question-score">
+            <strong>${escapeHtml(formatScore(itemScore, itemMax))}</strong>
+          </div>
+        </div>
+
+        <div class="feedback-box">
+          <h3>Feedback</h3>
+          ${richParagraph(item?.feedback)}
+        </div>
+
+        ${
+          item?.actionable_takeaway
+            ? `<div class="takeaway-box"><h3>Next Step</h3>${richParagraph(item.actionable_takeaway)}</div>`
+            : ""
+        }
+
+        ${
+          criteria.length
+            ? `
+              <table class="criteria-table">
+                <thead>
+                  <tr>
+                    <th>Criterion</th>
+                    <th>Evidence</th>
+                    <th>Score</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${criteria
+                    .map(
+                      (crit) => `
+                        <tr>
+                          <td>${richText(crit.description || "Criterion")}</td>
+                          <td>${richText(crit.evidence_quote || crit.feedback || "No specific evidence cited.")}</td>
+                          <td>${escapeHtml(formatScore(crit.score, crit.weight))}</td>
+                        </tr>
+                      `
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            `
+            : ""
+        }
+      </article>
+    `;
+  }).join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${printMode ? "" : "AutoAssessment Report"}</title>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["$", "$"], ["\\\\(", "\\\\)"]],
+        displayMath: [["$$", "$$"], ["\\\\[", "\\\\]"]],
+        processEscapes: true
+      },
+      svg: { fontCache: "global" },
+      startup: { typeset: false }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+  <style>
+    @page { size: A4 portrait; margin: 0; }
+    * { box-sizing: border-box; }
+    html {
+      background: #f4f6f8;
+    }
+    body {
+      margin: 0;
+      color: #202124;
+      background: #f4f6f8;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+    .report-shell {
+      width: 210mm;
+      min-height: 297mm;
+      margin: 24px auto;
+      padding: 26mm 24mm;
+      background: #ffffff;
+      box-shadow: 0 18px 60px rgba(17, 24, 39, 0.12);
+      overflow-wrap: anywhere;
+    }
+    .report-cover {
+      border-bottom: 3px solid #f47a55;
+      padding: 8px 0 20px;
+      margin-bottom: 22px;
+    }
+    .brand-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: flex-start;
+      margin-bottom: 26px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 800;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      display: inline-flex;
+      color: #6b7280;
+      flex: 0 0 auto;
+    }
+    .brand-mark svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .brand-page,
+    .brand-fold,
+    .brand-line {
+      stroke: #6b7280;
+      stroke-width: 2.4;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .brand-page,
+    .brand-fold {
+      fill: #ffffff;
+    }
+    .brand-badge {
+      fill: #f47a55;
+      stroke: #f47a55;
+      stroke-width: 2;
+    }
+    .brand-check {
+      stroke: #ffffff;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .meta { text-align: right; color: #6b7280; font-size: 11px; }
+    h1 { font-size: 30px; line-height: 1.12; margin: 0 0 10px; letter-spacing: 0; }
+    h2 { font-size: 16px; margin: 0 0 10px; letter-spacing: 0; }
+    h3 { font-size: 12px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; }
+    p { margin: 0; }
+    .subtitle { max-width: 150mm; color: #4b5563; font-size: 13px; }
+    .score-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin: 22px 0 0;
+    }
+    .score-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 12px;
+      background: #fafafa;
+    }
+    .score-card span { display: block; color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; }
+    .score-card strong { display: block; margin-top: 6px; font-size: 22px; line-height: 1.1; }
+    .report-section {
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      padding: 16px;
+      margin: 14px 0;
+      break-inside: avoid;
+    }
+    .summary-text { color: #374151; font-size: 13.5px; }
+    .clean-list { margin: 0; padding-left: 18px; }
+    .clean-list li { margin: 5px 0; }
+    .muted { color: #6b7280; }
+    .question-block {
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      margin: 16px 0;
+      padding: 16px;
+      break-inside: avoid;
+    }
+    .question-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      border-bottom: 1px solid #edf0f2;
+      padding-bottom: 12px;
+      margin-bottom: 14px;
+    }
+    .eyebrow { color: #f47a55; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; font-size: 10px; margin-bottom: 4px; }
+    .concept { color: #6b7280; font-weight: 600; }
+    .question-score {
+      min-width: 90px;
+      text-align: right;
+      color: #b43d30;
+    }
+    .question-score strong { display: block; font-size: 18px; }
+    .feedback-box, .takeaway-box {
+      background: #f8fafc;
+      border: 1px solid #edf0f2;
+      border-radius: 10px;
+      padding: 12px;
+      margin-top: 10px;
+    }
+    .takeaway-box {
+      background: #fff3ed;
+      border-color: #ffd2c2;
+    }
+    .criteria-table {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
+      margin-top: 14px;
+      font-size: 11.5px;
+    }
+    .criteria-table th {
+      text-align: left;
+      background: #f3f4f6;
+      color: #4b5563;
+      padding: 8px;
+      border: 1px solid #e5e7eb;
+    }
+    .criteria-table td {
+      vertical-align: top;
+      padding: 8px;
+      border: 1px solid #e5e7eb;
+    }
+    mjx-container {
+      overflow-x: auto;
+      overflow-y: hidden;
+      max-width: 100%;
+    }
+    mjx-container[display="true"] {
+      margin: 10px 0;
+      text-align: left;
+    }
+    .footer-note {
+      color: #6b7280;
+      border-top: 1px solid #e5e7eb;
+      margin-top: 24px;
+      padding-top: 12px;
+      font-size: 10.5px;
+    }
+    @media print {
+      html, body {
+        width: 210mm;
+        min-height: 297mm;
+        background: #ffffff;
+      }
+      body {
+        margin: 0;
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+      .report-shell {
+        width: 210mm;
+        min-height: 297mm;
+        margin: 0;
+        padding: 26mm 24mm;
+        box-shadow: none;
+      }
+      .question-block, .report-section, .score-card { break-inside: avoid; }
+    }
+    @media screen and (max-width: 900px) {
+      .report-shell {
+        width: calc(100vw - 32px);
+        min-height: auto;
+        padding: 36px;
+      }
+      .score-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <main class="report-shell">
+    <section class="report-cover">
+      <div class="brand-row">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none">
+              <path class="brand-page" d="M10 5h19l8 8v30H10Z" />
+              <path class="brand-fold" d="M29 5v8h8Z" />
+              <line class="brand-line" x1="15" y1="18" x2="25" y2="18" />
+              <line class="brand-line" x1="15" y1="24" x2="25" y2="24" />
+              <line class="brand-line" x1="15" y1="30" x2="24" y2="30" />
+              <circle class="brand-badge" cx="33" cy="36" r="9" />
+              <path class="brand-check" d="M29 36.2 32 39.2 37.5 32.5" />
+            </svg>
+          </span>
+          <span>AutoAssessment</span>
+        </div>
+        <div class="meta">
+          <div>Generated ${escapeHtml(generatedLabel)}</div>
+          ${studentName ? `<div>Student: ${escapeHtml(studentName)}</div>` : ""}
+        </div>
+      </div>
+      <h1>Assessment Feedback Report</h1>
+      <p class="subtitle">A readable grading summary for students, teachers, and parents, with scores, evidence, feedback, and next steps for improvement.</p>
+      <div class="score-grid">
+        <div class="score-card"><span>Overall</span><strong>${escapeHtml(average)} / 10</strong></div>
+        <div class="score-card"><span>Total Points</span><strong>${escapeHtml(formatScore(totalScore, maxScore))}</strong></div>
+        <div class="score-card"><span>Questions</span><strong>${rows.length}</strong></div>
+      </div>
+    </section>
+
+    <section class="report-section">
+      <h2>Overall Summary</h2>
+      <div class="summary-text">${richParagraph(report.overall_summary || "No summary was provided.")}</div>
+    </section>
+
+    ${listSection("Strengths", report.strengths, "No strengths were listed.")}
+    ${listSection("Priority Growth Areas", report.priority_growth_areas, "No priority growth areas were listed.")}
+
+    <section>
+      <h2>Question-by-Question Feedback</h2>
+      ${questionSections || `<p class="muted">No question-level evaluations were available.</p>`}
+    </section>
+
+    <p class="footer-note">AutoAssessment can make mistakes. Please review important scores, evidence, and feedback before using this report for official records.</p>
+  </main>
+</body>
+</html>`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function richText(value) {
+  return escapeHtml(value || "No feedback was provided.").replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br />");
+}
+
+function richParagraph(value, fallback = "No feedback was provided.") {
+  return `<p>${richText(value || fallback)}</p>`;
+}
+
+function formatElapsed(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function estimateWorkflowSeconds({ mode, documentCount, answerCount, hasOcrPreview }) {
+  const docs = Math.max(1, documentCount);
+  const answers = Math.max(1, answerCount);
+  if (mode === "ocr") return Math.min(32, 10 + docs * 4 + answers * 3);
+  if (hasOcrPreview) return Math.min(40, 14 + answers * 8);
+  return Math.min(52, 18 + docs * 5 + answers * 7);
+}
+
+function WorkflowProgress({
+  activeStage,
+  elapsedSeconds = 0,
+  estimateSeconds = 60,
+  variant = "assessment",
+}) {
+  if (!activeStage) return null;
+  const activeIndex = Math.max(0, WORKFLOW_STEPS.findIndex((step) => step.id === activeStage));
+  const activeStep = WORKFLOW_STEPS[activeIndex];
+  const stageFloor = (activeIndex / WORKFLOW_STEPS.length) * 100;
+  const timeProgress = Math.min(94, (elapsedSeconds / Math.max(estimateSeconds, 1)) * 100);
+  const progress = Math.max(4, Math.round(Math.max(stageFloor, timeProgress)));
+  const remaining = Math.max(0, estimateSeconds - elapsedSeconds);
+  const etaLabel = remaining <= 3 ? "Finishing" : `~${formatElapsed(remaining)}`;
+  const title = variant === "ocr" ? "Preparing OCR preview" : "Evaluating assessment";
+  return (
+    <div className="workflow-progress" aria-live="polite">
+      <div className="workflow-header">
+        <div>
+          <span className="workflow-kicker">Processing</span>
+          <h3>{title}</h3>
+          <p>{activeStep.label}: {activeStep.detail}</p>
+        </div>
+        <div className="workflow-timer">
+          <span>ETA</span>
+          <strong>{etaLabel}</strong>
+        </div>
+      </div>
+
+      <div className="workflow-track" role="progressbar" aria-valuenow={progress} aria-valuemin="0" aria-valuemax="100">
+        <span style={{ width: `${Math.min(progress, 98)}%` }} />
+      </div>
+
+      <div className="workflow-steps">
+        {WORKFLOW_STEPS.map((step, index) => (
+          <div
+            key={step.id}
+            className={`workflow-step ${
+              index < activeIndex ? "workflow-step-done" : ""
+            } ${index === activeIndex ? "workflow-step-active" : ""}`}
+          >
+            <span className="workflow-dot" />
+            <span>{step.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 
 export default function App() {
 const [agentModels, setAgentModels] = useState([]);
@@ -321,7 +880,9 @@ const loadPipelineModels = async () => {
   setModelsError("");
 
   try {
-    const res = await fetch("/api/models");
+    const res = await fetch("/api/models", {
+      credentials: "include",
+    });
 
     if (!res.ok) {
       throw new Error(`Failed to load models (${res.status})`);
@@ -344,7 +905,6 @@ const loadPipelineModels = async () => {
     setModelsLoading(false);
   }
 };
-
 
 // Voice Synthesis & Recognition State
 const [isListening, setIsListening] = useState(false);
@@ -448,9 +1008,11 @@ function splitIntoSpeechChunks(text) {
 const fetchSpeechChunkUrl = async (text) => {
   const res = await fetch("/api/voice/synthesize", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    credentials: "include",
     body: JSON.stringify({ text }),
   });
+  if (res.status === 401) throw new Error("VOICE_AUTH_EXPIRED");
   if (!res.ok) throw new Error("Voice synthesis failed");
   const blob = await res.blob();
   return URL.createObjectURL(blob);
@@ -518,6 +1080,9 @@ const handleSpeak = (text, index) => {
       await audio.play();
     } catch (err) {
       stopSpeaking();
+      if (err.message === "VOICE_AUTH_EXPIRED") {
+        handleSignOut();
+      }
     }
   };
 
@@ -530,14 +1095,29 @@ const handleSpeak = (text, index) => {
   const [answerFiles, setAnswerFiles] = useState([]);
   const [modelAnswerFile, setModelAnswerFile] = useState(null);
   const [modelAnswerText, setModelAnswerText] = useState("");
+  const [ocrPreview, setOcrPreview] = useState(null);
+  const [ocrDraft, setOcrDraft] = useState(null);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [workflowStage, setWorkflowStage] = useState("");
+  const [workflowElapsed, setWorkflowElapsed] = useState(0);
+  const [systemCheck, setSystemCheck] = useState(null);
   const [additionalInstructions, setAdditionalInstructions] = useState("");
   const [showOptionalUpload, setShowOptionalUpload] = useState(false);
+  const [showOcrPreview, setShowOcrPreview] = useState(true);
+  const [gradeConfirm, setGradeConfirm] = useState({
+    questionPaper: false,
+    studentAnswer: false,
+    marks: false,
+  });
+  const [assessmentError, setAssessmentError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [isRawMode, setIsRawMode] = useState(false);
   const [copyStatus, setCopyStatus] = useState("Copy JSON");
   const [errorMsg, setErrorMsg] = useState("");
   const [response, setResponse] = useState(null);
   const [assessmentId, setAssessmentId] = useState(null);
+  const [savedOcrPreview, setSavedOcrPreview] = useState(null);
+  const [ocrPanelOpen, setOcrPanelOpen] = useState(false);
   const [isBatch, setIsBatch] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [hasNewResult, setHasNewResult] = useState(false);
@@ -564,11 +1144,66 @@ const handleSpeak = (text, index) => {
   const [authError, setAuthError] = useState("");
   const [avatarFailed, setAvatarFailed] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [themeMode, setThemeMode] = useState(
     () => localStorage.getItem(THEME_STORAGE_KEY) || "light"
   );
   const googleButtonRef = useRef(null);
   const profileMenuRef = useRef(null);
+  const exportMenuRef = useRef(null);
+  const workflowSimulationRef = useRef([]);
+  const workflowStartedAtRef = useRef(null);
+
+  const clearWorkflowSimulation = () => {
+    workflowSimulationRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    workflowSimulationRef.current = [];
+    workflowStartedAtRef.current = null;
+  };
+
+  const startWorkflowSimulation = (stages, estimateSeconds) => {
+    clearWorkflowSimulation();
+    if (!stages.length) return;
+
+    workflowStartedAtRef.current = Date.now();
+    setWorkflowElapsed(0);
+    setWorkflowStage(stages[0]);
+    const stepMs = Math.max(1800, Math.floor((estimateSeconds * 1000) / (stages.length + 1)));
+    workflowSimulationRef.current = stages.slice(1).map((stage, index) =>
+      window.setTimeout(() => {
+        setWorkflowStage((current) => (current ? stage : current));
+      }, stepMs * (index + 1))
+    );
+  };
+
+  useEffect(() => {
+    if (!workflowStage || (!loading && !ocrLoading)) {
+      setWorkflowElapsed(0);
+      return;
+    }
+
+    const startedAt = workflowStartedAtRef.current || Date.now();
+    setWorkflowElapsed(0);
+    const timer = window.setInterval(() => {
+      setWorkflowElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [loading, ocrLoading]);
+
+  useEffect(() => () => clearWorkflowSimulation(), []);
+
+  useEffect(() => {
+    if (authUser) {
+      loadPipelineModels();
+      fetch("/api/system/check", {
+        headers: authHeaders(),
+        credentials: "include",
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => setSystemCheck(data))
+        .catch(() => setSystemCheck(null));
+    }
+  }, [authUser]);
   const getActiveAssessmentId = () => {
   if (isBatch) {
     return response?.results?.[selectedStudentId]?.assessment_id || null;
@@ -612,6 +1247,7 @@ const handleSpeak = (text, index) => {
         const res = await fetch("/api/auth/google", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "include",
           body: JSON.stringify({ credential: response.credential }),
         });
 
@@ -676,6 +1312,10 @@ const handleSpeak = (text, index) => {
   }, [authConfig.googleClientId, authUser]);
 
   const handleSignOut = () => {
+    fetch("/api/auth/signout", {
+      method: "POST",
+      credentials: "include",
+    }).catch(() => {});
     localStorage.removeItem(AUTH_STORAGE_KEY);
     localStorage.removeItem(AUTH_TOKEN_KEY);
     window.google?.accounts?.id?.disableAutoSelect?.();
@@ -692,10 +1332,41 @@ const handleSpeak = (text, index) => {
         setProfileMenuOpen(false);
       }
     };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setProfileMenuOpen(false);
+      }
+    };
 
     document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, [profileMenuOpen]);
+
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+
+    const handlePointerDown = (event) => {
+      if (!exportMenuRef.current?.contains(event.target)) {
+        setExportMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setExportMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [exportMenuOpen]);
 
   useEffect(() => {
     if (!answerPanelOpenFor) return;
@@ -741,6 +1412,7 @@ const handleSpeak = (text, index) => {
             "X-Session-ID": SESSION_ID,
             ...authHeaders(),
           },
+          credentials: "include",
         }
       );
 
@@ -772,7 +1444,10 @@ const handleSpeak = (text, index) => {
   const loadAssessment = async (id) => {
     setErrorMsg("");
     try {
-      const res = await fetch(`/api/assessments/${id}`);
+      const res = await fetch(`/api/assessments/${id}`, {
+        headers: authHeaders(),
+        credentials: "include",
+      });
       if (!res.ok) {
         let rawDetail = "";
         try {
@@ -785,6 +1460,8 @@ const handleSpeak = (text, index) => {
       }
       const data = await res.json();
       setResponse(data);
+      setSavedOcrPreview(null);
+      setOcrPanelOpen(false);
       setAssessmentId(data.assessment_id || id);
       setIsBatch(false);
       setSelectedStudentId(null);
@@ -802,6 +1479,7 @@ const handleSpeak = (text, index) => {
       const res = await fetch(`/api/assessments/${id}`, {
         method: "DELETE",
         headers: { "X-Session-ID": SESSION_ID, ...authHeaders() },
+        credentials: "include",
       });
       if (res.status === 401) {
         handleSignOut();
@@ -835,6 +1513,117 @@ const handleSpeak = (text, index) => {
     URL.revokeObjectURL(url);
   };
 
+  const getExportReport = () => {
+    if (!isBatch) return response;
+    return selectedStudentId && response?.results ? response.results[selectedStudentId] : null;
+  };
+
+  const exportMarkdown = () => {
+    const report = getExportReport();
+    if (!report) {
+      setErrorMsg("No report is selected to export.");
+      return;
+    }
+    saveFile("assessment-report.md", reportToMarkdown(report), "text/markdown");
+  };
+
+  const exportHtml = ({ print = false } = {}) => {
+    const report = getExportReport();
+    if (!report) {
+      setErrorMsg("No report is selected to export.");
+      return;
+    }
+    const html = reportToHtml(report, {
+      studentName: isBatch ? selectedStudentId : "",
+      printMode: print,
+    });
+    if (print) {
+      const iframe = document.createElement("iframe");
+      iframe.style.position = "fixed";
+      iframe.style.left = "-10000px";
+      iframe.style.top = "0";
+      iframe.style.width = "210mm";
+      iframe.style.height = "297mm";
+      iframe.style.border = "0";
+      iframe.setAttribute("aria-hidden", "true");
+      document.body.appendChild(iframe);
+
+      const frameWindow = iframe.contentWindow;
+      const frameDocument = iframe.contentDocument || frameWindow?.document;
+
+      if (!frameWindow || !frameDocument) {
+        iframe.remove();
+        setErrorMsg("Could not open the print dialog. Use Export HTML instead.");
+        return;
+      }
+
+      frameDocument.open();
+      frameDocument.write(html);
+      frameDocument.close();
+
+      let didPrint = false;
+      const printFrame = async () => {
+        if (didPrint) return;
+        didPrint = true;
+        try {
+          if (frameWindow.MathJax?.startup?.promise) {
+            await frameWindow.MathJax.startup.promise;
+          }
+          if (frameWindow.MathJax?.typesetPromise) {
+            await frameWindow.MathJax.typesetPromise();
+          }
+        } catch {
+          // Print the report even if the optional math renderer cannot load.
+        }
+        frameWindow.focus();
+        frameWindow.print();
+        window.setTimeout(() => iframe.remove(), 1000);
+      };
+
+      iframe.onload = printFrame;
+      window.setTimeout(() => {
+        if (document.body.contains(iframe)) {
+          printFrame();
+        }
+      }, 250);
+      return;
+    }
+    saveFile("assessment-report.html", html, "text/html");
+  };
+
+  const runExportAction = (action) => {
+    setExportMenuOpen(false);
+    action();
+  };
+
+  const handleLoadSavedOcr = async () => {
+    const activeId = getActiveAssessmentId();
+    if (!activeId) return;
+    if (ocrPanelOpen) {
+      setOcrPanelOpen(false);
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/assessments/${activeId}/ocr`, {
+        headers: authHeaders(),
+        credentials: "include",
+      });
+      if (res.status === 401) {
+        handleSignOut();
+        return;
+      }
+      if (!res.ok) {
+        throw new Error("Could not load saved OCR preview.");
+      }
+      const data = await res.json();
+      setSavedOcrPreview(data.ocr_preview || {});
+      setOcrPanelOpen(true);
+    } catch (err) {
+      setErrorMsg(err.message || "Could not load saved OCR preview.");
+    }
+  };
+
   const handleCopy = () => {
     const content = JSON.stringify(response, null, 2);
     navigator.clipboard.writeText(content).then(() => {
@@ -843,7 +1632,16 @@ const handleSpeak = (text, index) => {
     });
   };
 
+  const clearOcrPreview = () => {
+    setOcrPreview(null);
+    setOcrDraft(null);
+    setShowOcrPreview(true);
+    setGradeConfirm({ questionPaper: false, studentAnswer: false, marks: false });
+    setAssessmentError(null);
+  };
+
   const handleAddAnswerFiles = (fileList) => {
+    clearOcrPreview();
     const newFiles = Array.from(fileList || []);
     setAnswerFiles((prev) => {
       const existingKeys = new Set(prev.map((f) => `${f.name}_${f.size}`));
@@ -860,24 +1658,48 @@ const handleSpeak = (text, index) => {
   };
 
   const removeAnswerFile = (index) => {
+    clearOcrPreview();
     setAnswerFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleAssess = async () => {
-    if (!rubricFile && answerFiles.length === 0) {
-      setErrorMsg("Please upload at least an answer sheet or rubric file.");
-      return;
-    }
-    setErrorMsg("");
-    setLoading(true);
-
-    const useBatch = answerFiles.length > 1;
-
+  const buildUploadFormData = ({ usePreview = false } = {}) => {
+    const useBatch = usePreview && ocrPreview?.mode === "batch"
+      ? true
+      : answerFiles.length > 1;
     const formData = new FormData();
+
+    if (additionalInstructions.trim()) {
+      formData.append("instructions", additionalInstructions.trim());
+    }
+
+    if (usePreview && ocrDraft) {
+      formData.append("question_paper_text", ocrDraft.questionPaper || "");
+      formData.append("rubric_text", ocrDraft.rubric || "");
+      formData.append("model_answer_text", ocrDraft.modelAnswer || "");
+      formData.append("ocr_preview_json", JSON.stringify(ocrPreview));
+
+      if (useBatch) {
+        formData.append(
+          "preview_payload",
+          JSON.stringify({
+            ...ocrPreview,
+            question_paper_text: ocrDraft.questionPaper || "",
+            rubric_text: ocrDraft.rubric || "",
+            model_answer_text: ocrDraft.modelAnswer || "",
+            custom_instructions: additionalInstructions.trim(),
+            answers: ocrDraft.answers || [],
+          })
+        );
+      } else {
+        formData.append("student_answer_text", ocrDraft.studentAnswer || "");
+      }
+
+      return { formData, useBatch };
+    }
+
     if (rubricFile) formData.append("rubric_file", rubricFile);
     if (modelAnswerFile) formData.append("model_answer_file", modelAnswerFile);
     if (modelAnswerText.trim()) formData.append("model_answer_text", modelAnswerText.trim());
-    if (additionalInstructions.trim()) formData.append("instructions", additionalInstructions.trim());
 
     if (useBatch) {
       answerFiles.forEach((f) => formData.append("answer_files", f));
@@ -886,18 +1708,38 @@ const handleSpeak = (text, index) => {
       formData.append("answer_file", answerFiles[0]);
     }
 
+    return { formData, useBatch };
+  };
+
+  const handlePreviewOcr = async () => {
+    if (!rubricFile || answerFiles.length === 0) {
+      setErrorMsg("Upload a rubric/question paper and at least one answer sheet before previewing OCR.");
+      return;
+    }
+
+    setErrorMsg("");
+    setAssessmentError(null);
+    setOcrLoading(true);
+    const estimateSeconds = estimateWorkflowSeconds({
+      mode: "ocr",
+      documentCount: uploadedDocumentCount,
+      answerCount: answerFiles.length,
+      hasOcrPreview: false,
+    });
+    startWorkflowSimulation(["uploading", "ocr"], estimateSeconds);
+
+    const { formData } = buildUploadFormData();
+
     try {
-      const res = await fetch(
-        useBatch ? "/api/assess/batch" : "/api/assess",
-        {
-          method: "POST",
-          headers: {
-            "X-Session-ID": SESSION_ID,
-            ...authHeaders(),
-          },
-          body: formData,
-        }
-      );
+      const res = await fetch("/api/ocr/preview", {
+        method: "POST",
+        headers: {
+          "X-Session-ID": SESSION_ID,
+          ...authHeaders(),
+        },
+        credentials: "include",
+        body: formData,
+      });
 
       if (res.status === 401) {
         handleSignOut();
@@ -918,7 +1760,91 @@ const handleSpeak = (text, index) => {
       }
 
       const data = await res.json();
+      setOcrPreview(data);
+      setOcrDraft({
+        questionPaper: data.question_paper_text || "",
+        rubric: data.rubric_text || "",
+        studentAnswer: data.student_answer_text || "",
+        modelAnswer: data.model_answer_text || modelAnswerText,
+        answers: data.answers || [],
+      });
+      setShowOcrPreview(true);
+      setGradeConfirm({ questionPaper: false, studentAnswer: false, marks: false });
+    } catch (err) {
+      setErrorMsg(err.message || "OCR preview failed.");
+    } finally {
+      clearWorkflowSimulation();
+      setOcrLoading(false);
+      setWorkflowStage("");
+    }
+  };
+
+  const handleAssess = async () => {
+    if (!rubricFile && answerFiles.length === 0) {
+      setErrorMsg("Please upload at least an answer sheet or rubric file.");
+      return;
+    }
+    setErrorMsg("");
+    setAssessmentError(null);
+    setLoading(true);
+    const estimateSeconds = estimateWorkflowSeconds({
+      mode: "assessment",
+      documentCount: uploadedDocumentCount,
+      answerCount: answerFiles.length,
+      hasOcrPreview: !!ocrDraft,
+    });
+    startWorkflowSimulation(
+      ocrDraft
+        ? ["answer-key", "grading", "auditing"]
+        : ["uploading", "ocr", "answer-key", "grading", "auditing"],
+      estimateSeconds
+    );
+
+    const { formData, useBatch } = buildUploadFormData({ usePreview: !!ocrDraft });
+
+    try {
+      const res = await fetch(
+        useBatch ? "/api/assess/batch" : "/api/assess",
+        {
+          method: "POST",
+          headers: {
+            "X-Session-ID": SESSION_ID,
+            ...authHeaders(),
+          },
+          credentials: "include",
+          body: formData,
+        }
+      );
+
+      if (res.status === 401) {
+        handleSignOut();
+        setErrorMsg("Your session expired. Please sign in again.");
+        return;
+      }
+
+      if (!res.ok) {
+        let rawDetail = "";
+        try {
+          const errBody = await res.json();
+          rawDetail = errBody.detail || JSON.stringify(errBody);
+        } catch {
+          rawDetail = await res.text();
+        }
+        setErrorMsg(parseErrorMessage(res.status, rawDetail));
+        setAssessmentError({
+          title: "Evaluation could not finish",
+          message: parseErrorMessage(res.status, rawDetail),
+          recoverable: !!ocrDraft,
+        });
+        if (ocrDraft) setShowOcrPreview(true);
+        return;
+      }
+
+      const data = await res.json();
+      setWorkflowStage("auditing");
       setResponse(data);
+      setSavedOcrPreview(null);
+      setOcrPanelOpen(false);
       setAssessmentId(data.assessment_id || null);
       setIsBatch(useBatch);
       if (useBatch && data.results) {
@@ -933,8 +1859,16 @@ const handleSpeak = (text, index) => {
       loadHistory();
     } catch (err) {
       setErrorMsg(err.message || "An error occurred during assessment.");
+      setAssessmentError({
+        title: "Evaluation could not finish",
+        message: err.message || "An error occurred during assessment.",
+        recoverable: !!ocrDraft,
+      });
+      if (ocrDraft) setShowOcrPreview(true);
     } finally {
+      clearWorkflowSimulation();
       setLoading(false);
+      setWorkflowStage("");
     }
   };
 
@@ -951,7 +1885,8 @@ const handleSpeak = (text, index) => {
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        credentials: "include",
         body: JSON.stringify({
           assessment_id: getActiveAssessmentId(),
           messages: updatedMessages,
@@ -996,7 +1931,8 @@ const handleSpeak = (text, index) => {
     try {
       const res = await fetch("/api/regrade", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        credentials: "include",
         body: JSON.stringify({
           assessment_id: getActiveAssessmentId(),
           question_id: questionId,
@@ -1067,7 +2003,7 @@ const handleSpeak = (text, index) => {
   const getMaxScore = (q) => (q?.max_score ?? 10);
   const totalScore = questionList.reduce((sum, q) => sum + (q?.score || 0), 0);
   const maxTotal = questionList.reduce((sum, q) => sum + getMaxScore(q), 0);
-  const averageScore = maxTotal ? ((totalScore / maxTotal) * 10).toFixed(1) : null;
+  const averageScore = maxTotal ? formatNumber((totalScore / maxTotal) * 10) : null;
   const passCount = questionList.filter((q) => (q?.score || 0) >= getMaxScore(q)).length;
   const overallTier = maxTotal ? getScoreTier(totalScore, maxTotal) : "mid";
 
@@ -1075,6 +2011,32 @@ const handleSpeak = (text, index) => {
   const userFullName = authUser?.name || authUser?.email?.split("@")[0] || "Signed in";
   const userDisplayName = userFullName.trim().split(/\s+/)[0];
   const userInitial = (authUser?.name || authUser?.email || "A").slice(0, 1).toUpperCase();
+  const uploadedDocumentCount = Math.max(1, answerFiles.length + (rubricFile ? 1 : 0) + (modelAnswerFile ? 1 : 0));
+  const workflowEstimateSeconds = estimateWorkflowSeconds({
+    mode: ocrLoading ? "ocr" : "assessment",
+    documentCount: uploadedDocumentCount,
+    answerCount: answerFiles.length,
+    hasOcrPreview: !!ocrDraft,
+  });
+  const ocrQualityWarnings = getOcrQualityWarnings(ocrDraft);
+  const isGradeConfirmed = !ocrDraft || (
+    gradeConfirm.questionPaper &&
+    gradeConfirm.studentAnswer &&
+    gradeConfirm.marks
+  );
+  const looksUngradable =
+    response &&
+    questionList.length > 0 &&
+    totalScore === 0 &&
+    maxTotal <= 1 &&
+    questionList.every((item) =>
+      /ocr|api|missing input|could not|failed|unreadable/i.test(
+        `${item?.question_id || ""} ${item?.concept_tested || ""} ${item?.feedback || ""} ${item?.actionable_takeaway || ""}`
+      )
+    );
+  const hasPdfUpload = [rubricFile, modelAnswerFile, ...answerFiles]
+    .filter(Boolean)
+    .some((file) => file.name?.toLowerCase().endsWith(".pdf"));
 
   const goToTab = (id) => {
     setActiveTab(id);
@@ -1175,7 +2137,7 @@ const handleSpeak = (text, index) => {
         </div>
       </aside>
 
-      <main className="app-main">
+      <main className={`app-main ${sidebarOpen ? "" : "app-main-sidebar-collapsed"}`}>
         <header className="app-topbar">
           <div className="topbar-actions">
             <div className="profile-menu" ref={profileMenuRef}>
@@ -1277,7 +2239,10 @@ const handleSpeak = (text, index) => {
                   <input
                     type="file"
                     accept="image/*,.pdf,.docx,.txt,.md,.csv"
-                    onChange={(e) => setRubricFile(e.target.files?.[0] || null)}
+                    onChange={(e) => {
+                      clearOcrPreview();
+                      setRubricFile(e.target.files?.[0] || null);
+                    }}
                   />
                 </label>
                 {rubricFile && (
@@ -1337,6 +2302,12 @@ const handleSpeak = (text, index) => {
               </p>
             )}
 
+            {hasPdfUpload && systemCheck && !systemCheck.poppler_available && (
+              <p className="error-text">
+                PDF OCR needs Poppler on this Mac. Install it with: brew install poppler
+              </p>
+            )}
+
             <div className="optional-section">
               <button
                 type="button"
@@ -1361,7 +2332,10 @@ const handleSpeak = (text, index) => {
                       <input
                         type="file"
                         accept="image/*,.pdf,.docx,.txt"
-                        onChange={(e) => setModelAnswerFile(e.target.files?.[0] || null)}
+                        onChange={(e) => {
+                          clearOcrPreview();
+                          setModelAnswerFile(e.target.files?.[0] || null);
+                        }}
                       />
                     </label>
                     {modelAnswerFile && (
@@ -1388,19 +2362,197 @@ const handleSpeak = (text, index) => {
               )}
             </div>
 
+            <WorkflowProgress
+              activeStage={workflowStage}
+              elapsedSeconds={workflowElapsed}
+              estimateSeconds={workflowEstimateSeconds}
+              variant={ocrLoading ? "ocr" : "assessment"}
+            />
+
+            {ocrDraft && (
+              <div className="ocr-review">
+                <div className="ocr-review-header">
+                  <div>
+                    <span className="dropzone-label">OCR preview</span>
+                    <h2>Review extracted text before grading</h2>
+                    <p className="ocr-review-subtitle">
+                      Correct missing words, marks, or math notation here. The edited text below is what grading will use.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="ocr-review-toggle"
+                    onClick={() => setShowOcrPreview((open) => !open)}
+                    aria-expanded={showOcrPreview}
+                  >
+                    <span>Ready to review</span>
+                    <Icon name={showOcrPreview ? "chevronUp" : "chevronDown"} />
+                  </button>
+                </div>
+
+                {showOcrPreview && (
+                  <>
+                    <div className="ocr-review-guide">
+                      <span>Check question numbers</span>
+                      <span>Check marks per question</span>
+                      <span>Check formulas and symbols</span>
+                    </div>
+
+                    <OcrEditorField
+                      label="Question paper / rubric"
+                      value={ocrDraft.questionPaper}
+                      onChange={(value) =>
+                        setOcrDraft((draft) => ({ ...draft, questionPaper: value }))
+                      }
+                    />
+
+                    {ocrPreview?.mode === "batch" ? (
+                      <div className="ocr-answer-stack">
+                        {ocrDraft.answers.map((answer, index) => (
+                          <OcrEditorField
+                            key={`${answer.student_id}_${index}`}
+                            label={answer.student_id || answer.filename || `Student ${index + 1}`}
+                            value={answer.student_answer_text}
+                            onChange={(value) =>
+                              setOcrDraft((draft) => ({
+                                ...draft,
+                                answers: draft.answers.map((item, itemIndex) =>
+                                  itemIndex === index
+                                    ? { ...item, student_answer_text: value }
+                                    : item
+                                ),
+                              }))
+                            }
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <OcrEditorField
+                        label="Student answer"
+                        value={ocrDraft.studentAnswer}
+                        onChange={(value) =>
+                          setOcrDraft((draft) => ({ ...draft, studentAnswer: value }))
+                        }
+                      />
+                    )}
+
+                    <OcrEditorField
+                      label="Official model answer"
+                      value={ocrDraft.modelAnswer}
+                      placeholder="Optional"
+                      onChange={(value) =>
+                        setOcrDraft((draft) => ({ ...draft, modelAnswer: value }))
+                      }
+                    />
+
+                    <div className="ocr-page-summary">
+                      {Object.entries(ocrPreview?.ocr_pages || {}).map(([name, pages]) =>
+                        pages?.length ? (
+                          <span key={name}>
+                            {name.replaceAll("_", " ")}: {pages.filter((page) => !page.error).length}/{pages.length} page OCR
+                            {pages.some((page) => page.cached) ? " · cached" : ""}
+                          </span>
+                        ) : null
+                      )}
+                      {ocrPreview?.answers?.map((answer) => (
+                        <span key={answer.student_id}>
+                          {answer.student_id}: {answer.ocr_pages?.filter((page) => !page.error).length || 0}/{answer.ocr_pages?.length || 0} page OCR
+                        </span>
+                      ))}
+                    </div>
+
+                    {ocrQualityWarnings.length > 0 && (
+                      <div className="ocr-warning-panel">
+                        <strong>Review recommended before grading</strong>
+                        <ul>
+                          {ocrQualityWarnings.map((warning) => (
+                            <li key={warning}>{warning}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <div className="grade-confirm-panel">
+                      <div>
+                        <strong>Ready to grade?</strong>
+                        <span>Confirm the OCR is usable before sending it to the evaluator.</span>
+                      </div>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={gradeConfirm.questionPaper}
+                          onChange={(event) =>
+                            setGradeConfirm((state) => ({ ...state, questionPaper: event.target.checked }))
+                          }
+                        />
+                        Question paper is readable
+                      </label>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={gradeConfirm.studentAnswer}
+                          onChange={(event) =>
+                            setGradeConfirm((state) => ({ ...state, studentAnswer: event.target.checked }))
+                          }
+                        />
+                        Student answer is readable
+                      </label>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={gradeConfirm.marks}
+                          onChange={(event) =>
+                            setGradeConfirm((state) => ({ ...state, marks: event.target.checked }))
+                          }
+                        />
+                        Marks and question numbers look correct
+                      </label>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             {errorMsg && <p className="error-text">{errorMsg}</p>}
+
+            {assessmentError?.recoverable && (
+              <div className="recovery-panel">
+                <div>
+                  <strong>{assessmentError.title}</strong>
+                  <span>Your OCR edits are still here. Fix the text if needed, then retry grading without uploading again.</span>
+                </div>
+                <div className="recovery-actions">
+                  <button className="button button-primary button-sm" onClick={handleAssess} disabled={loading || !isGradeConfirmed}>
+                    Retry grading
+                  </button>
+                  <button className="button button-secondary button-sm" onClick={handlePreviewOcr} disabled={loading || ocrLoading}>
+                    Re-run OCR
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="actions">
               <button
+                className={`button button-secondary button-lg ${ocrLoading ? "button-loading" : ""}`}
+                onClick={handlePreviewOcr}
+                disabled={ocrLoading || loading || !rubricFile || answerFiles.length === 0}
+              >
+                <span className="button-loader" aria-hidden="true" />
+                <span className="button-text">
+                  {ocrLoading ? "Preparing preview..." : ocrDraft ? "Refresh OCR preview" : "Preview OCR"}
+                </span>
+              </button>
+              <button
                 className={`button button-primary button-lg ${loading ? "button-loading" : ""}`}
                 onClick={handleAssess}
-                disabled={loading || (!rubricFile && answerFiles.length === 0)}
+                disabled={loading || ocrLoading || !isGradeConfirmed || (!ocrDraft && (!rubricFile || answerFiles.length === 0))}
               >
                 <span className="button-loader" aria-hidden="true" />
                 <span className="button-text">
                   {loading
-                    ? "Evaluating documents…"
-                    : answerFiles.length > 1
+                    ? "Evaluating documents..."
+                    : (ocrPreview?.mode === "batch" || answerFiles.length > 1)
                     ? `Start batch assessment (${answerFiles.length})`
                     : "Start assessment"}
                 </span>
@@ -1422,15 +2574,56 @@ const handleSpeak = (text, index) => {
                 <h1>Score feed</h1>
               </div>
               <div className="result-actions">
-                <button className="button button-muted" onClick={handleCopy} disabled={!response}>
-                  {copyStatus}
-                </button>
+                <div className="export-menu" ref={exportMenuRef}>
+                  <button
+                    className={`button button-secondary export-trigger ${exportMenuOpen ? "export-trigger-open" : ""}`}
+                    onClick={() => setExportMenuOpen((open) => !open)}
+                    disabled={!response}
+                    aria-haspopup="menu"
+                    aria-expanded={exportMenuOpen}
+                  >
+                    Export
+                    <Icon name={exportMenuOpen ? "chevronUp" : "chevronDown"} />
+                  </button>
+                  {exportMenuOpen && (
+                    <div className="export-popover" role="menu">
+                      <button type="button" role="menuitem" onClick={() => runExportAction(() => exportHtml({ print: true }))}>
+                        <span>PDF</span>
+                        <small>A4 print-ready report</small>
+                      </button>
+                      <button type="button" role="menuitem" onClick={() => runExportAction(() => exportHtml())}>
+                        <span>HTML</span>
+                        <small>Shareable web report</small>
+                      </button>
+                      <button type="button" role="menuitem" onClick={() => runExportAction(exportMarkdown)}>
+                        <span>Markdown</span>
+                        <small>Readable plain-text format</small>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() =>
+                          runExportAction(() =>
+                            saveFile("assessment.json", JSON.stringify(response, null, 2), "application/json")
+                          )
+                        }
+                      >
+                        <span>JSON</span>
+                        <small>Raw structured data</small>
+                      </button>
+                      <button type="button" role="menuitem" onClick={() => runExportAction(handleCopy)}>
+                        <span>{copyStatus}</span>
+                        <small>Copy data to clipboard</small>
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <button
                   className="button button-secondary"
-                  onClick={() => saveFile("assessment.json", JSON.stringify(response, null, 2), "application/json")}
+                  onClick={handleLoadSavedOcr}
                   disabled={!response}
                 >
-                  Export JSON
+                  {ocrPanelOpen ? "Hide OCR" : "View OCR"}
                 </button>
                 <button
                   className="button button-secondary"
@@ -1467,14 +2660,75 @@ const handleSpeak = (text, index) => {
                   </div>
                 )}
 
+                {ocrPanelOpen && (
+                  <div className="ocr-review">
+                    <div className="ocr-review-header">
+                      <div>
+                        <span className="dropzone-label">Saved OCR</span>
+                        <h2>Per-page extraction</h2>
+                        <p className="ocr-review-subtitle">
+                          Review the text AutoAssessment used for grading. If exact page OCR was not saved, this shows the final extracted text.
+                        </p>
+                      </div>
+                    </div>
+                    {Object.keys(savedOcrPreview || {}).length === 0 ? (
+                      <div className="ocr-empty-state">
+                        <strong>No saved OCR text is available for this assessment.</strong>
+                        <span>Run OCR preview before grading next time to preserve page-level extraction.</span>
+                      </div>
+                    ) : (
+                      <div className="ocr-saved-grid">
+                        {Object.entries(savedOcrPreview || {}).map(([section, pages]) => (
+                          <div className="ocr-saved-section" key={section}>
+                            <span className="dropzone-label">{section.replaceAll("_", " ")}</span>
+                            {(pages || []).map((page) => (
+                              <details key={`${section}-${page.page}`} className="ocr-page-detail">
+                                <summary>
+                                  Page {page.page} {page.cached ? "· cached" : ""} {page.error ? "· failed" : ""}
+                                </summary>
+                                <div className="ocr-page-rendered">
+                                  {page.error ? (
+                                    <pre>{page.error}</pre>
+                                  ) : page.text ? (
+                                    <Markdown>{page.text}</Markdown>
+                                  ) : (
+                                    <p>No text extracted.</p>
+                                  )}
+                                </div>
+                              </details>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {looksUngradable && (
+                  <div className="no-grade-panel">
+                    <div>
+                      <span className="dropzone-label">Needs review</span>
+                      <h2>This assessment was not graded reliably</h2>
+                      <p>
+                        The result looks like it came from missing or failed OCR instead of readable student work.
+                        Go back to upload, preview OCR, correct the extracted text, and grade again.
+                      </p>
+                    </div>
+                    <button className="button button-primary" onClick={() => goToTab("upload")}>
+                      Review OCR and retry
+                    </button>
+                  </div>
+                )}
+
+                {!looksUngradable && (
                 <div className="stat-row">
                   <div className={`stat-card stat-card-${overallTier}`}>
                     <span className="stat-label">Average score</span>
-                    <span className="stat-value">{averageScore ? `${averageScore}` : "—"}<small>/10</small></span>
+                    <span className="stat-value">{averageScore !== null ? averageScore : "—"}<small>/10</small></span>
                   </div>
                   <div className={`stat-card stat-card-${overallTier}`}>
                     <span className="stat-label">Total points</span>
-                    <span className="stat-value">{totalScore.toFixed(1)}<small>/{maxTotal.toFixed(0)}</small></span>
+                    <span className="stat-value">{formatNumber(totalScore)}<small>/{formatNumber(maxTotal)}</small></span>
                   </div>
                   <div className="stat-card">
                     <span className="stat-label">Questions graded</span>
@@ -1485,8 +2739,9 @@ const handleSpeak = (text, index) => {
                     <span className="stat-value">{passCount}<small>/{questionList.length} questions</small></span>
                   </div>
                 </div>
+                )}
 
-                {activeReport?.student_memory?.length > 0 && (
+                {!looksUngradable && activeReport?.student_memory?.length > 0 && (
                   <div className="growth-card growth-priorities">
                     <span className="growth-card-title">Recurring Across Your Past Assessments</span>
                     <ul>
@@ -1500,7 +2755,7 @@ const handleSpeak = (text, index) => {
                   </div>
                 )}
 
-                {activeReport?.strengths?.length > 0 || activeReport?.priority_growth_areas?.length > 0 ? (
+                {!looksUngradable && (activeReport?.strengths?.length > 0 || activeReport?.priority_growth_areas?.length > 0) ? (
                   <div className="growth-summary-grid">
                     {activeReport.strengths?.length > 0 && (
                       <div className="growth-card growth-strengths">
@@ -1527,7 +2782,7 @@ const handleSpeak = (text, index) => {
 
                 {isRawMode ? (
                   <pre className="result-json">{JSON.stringify(response, null, 2)}</pre>
-                ) : (
+                ) : looksUngradable ? null : (
                   <div className="result-cards">
                     {questionList.map((item, idx) => {
                       const qid = item?.question_id ?? `Question ${idx + 1}`;
@@ -1550,7 +2805,7 @@ const handleSpeak = (text, index) => {
                               )}
                             </div>
                             <span className={`badge-pill badge-pill-${scoreTier}`}>
-                              {questionScore.toFixed(1)} / {questionMax}
+                              {formatScore(questionScore, questionMax)}
                             </span>
                           </div>
 
@@ -1580,7 +2835,7 @@ const handleSpeak = (text, index) => {
                                     )}
                                   </div>
                                   <span className={`rubric-score tier-${getScoreTier(crit.score, crit.weight)}`}>
-                                    {crit.score}/{crit.weight}
+                                    {formatScore(crit.score, crit.weight)}
                                   </span>
                                 </li>
                               ))}
@@ -1809,7 +3064,7 @@ const handleSpeak = (text, index) => {
                           </span>
                         </div>
                         <span className={`badge-pill badge-pill-${tier}`}>
-                          {score.toFixed(1)} / {max.toFixed(0)}
+                          {formatScore(score, max)}
                         </span>
                       </div>
                       <div className="feedback-panel">
@@ -2022,7 +3277,9 @@ const handleSpeak = (text, index) => {
 
                       <span
                         className={`model-pill-badge ${
-                          item.model?.toLowerCase().includes("gemini")
+                          item.provider?.toLowerCase().includes("bodhan")
+                            ? "badge-bodhan"
+                            : item.model?.toLowerCase().includes("gemini")
                             ? "badge-gemini"
                             : "badge-python"
                         }`}
@@ -2037,13 +3294,19 @@ const handleSpeak = (text, index) => {
 
                     <div className="model-spec-footer">
                       <span className="model-label">
-                        Engine / Checkpoint:
+                        Provider / Model:
                       </span>
 
-                      <code className="model-code-tag">
-                        {item.model}
-                      </code>
+                      <span className="model-stack">
+                        {item.provider && <span className="model-provider">{item.provider}</span>}
+                        <code className="model-code-tag">
+                          {item.model}
+                        </code>
+                      </span>
                     </div>
+                    {item.cost_note && (
+                      <p className="model-cost-note">{item.cost_note}</p>
+                    )}
                   </div>
                 );
               })}

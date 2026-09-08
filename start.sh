@@ -51,6 +51,12 @@ if [[ -z "${GEMINI_API_KEY:-}" ]]; then
   echo 'export GEMINI_API_KEY="your-real-gemini-api-key"'
 fi
 
+if [[ -z "${BODHAN_API_KEY:-}" ]]; then
+  echo "Warning: BODHAN_API_KEY is not set."
+  echo "Text-to-speech will fail until you run:"
+  echo 'export BODHAN_API_KEY="your-real-bodhan-api-key"'
+fi
+
 if [[ -z "${GOOGLE_CLIENT_ID:-}" ]]; then
   echo "GOOGLE_CLIENT_ID is not set."
   echo "Create an OAuth web client in Google Cloud, then run:"

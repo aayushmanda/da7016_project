@@ -56,15 +56,20 @@ Create `.env` in the repo root:
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | yes | grading/transcription/chat |
+| `GEMINI_API_KEY` | yes | grading/chat |
 | `GOOGLE_CLIENT_ID` | yes | Google sign-in |
 | `SESSION_SECRET` | recommended | signs session tokens; if unset, a random one is generated per process start and everyone is signed out on restart |
 | `GOOGLE_ALLOWED_DOMAINS` | no | comma-separated email domains allowed to sign in; unset = allow all |
-| `BODHAN_API_KEY` | no | enables "listen" (text-to-speech) in Agent Chat |
-| `GEMINI_TRANSCRIPTION_MODEL` / `GEMINI_GRADING_MODEL` / `GEMINI_CHAT_MODEL` | no | override the default model per stage |
+| `BODHAN_API_KEY` | yes | enables `indic-speak` text-to-speech in Agent Chat through Bodhan |
+| `BODHAN_TTS_BASE_URL` | no | Bodhan OpenAI-compatible TTS base URL (default `https://api.bodhan.ai/v1`) |
+| `TTS_MODEL` | no | text-to-speech model name (default `indic-speak`) |
+| `USE_BODHAN_OCR` | no | set to `true` only if you have a separate OCR-capable Bodhan key; otherwise Gemini vision OCR is used |
+| `BODHAN_OCR_API_KEY` | no | Bodhan OCR key used only when `USE_BODHAN_OCR=true` |
+| `BODHAN_OCR_MODEL` | no | override the Bodhan OCR model when `USE_BODHAN_OCR=true` (default `indic-ocr`) |
+| `GEMINI_GRADING_MODEL` / `GEMINI_CHAT_MODEL` | no | override the default model per stage |
 | `BATCH_CONCURRENCY` | no | concurrent Gemini calls in a batch grading run (default `3`) |
 | `MAX_BATCH_SIZE` | no | max students per batch (default `25`) |
-| `MAX_IMAGES_PER_REQUEST` | no | max image pages per single upload (default `10`; PDFs are exempt — sent to Gemini natively) |
+| `MAX_IMAGES_PER_REQUEST` | no | max image/PDF pages per single upload (default `10`; PDFs are converted to page images for OCR) |
 
 Run both servers (two terminals):
 

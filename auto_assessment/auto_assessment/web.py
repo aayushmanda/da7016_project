@@ -9,12 +9,13 @@ import json
 import re
 import os
 import secrets
+import shutil
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from starlette.datastructures import FormData
@@ -37,6 +38,8 @@ from agent import (
     RegradeRequest,
     RubricAssessmentAgent,
     TRANSCRIPTION_MODEL,
+    BODHAN_OCR_ENABLED,
+    BODHAN_OCR_MODEL,
     GRADING_MODEL,
     CHAT_MODEL,
     needs_visual_grading,
@@ -68,7 +71,8 @@ app.add_middleware(
 _db_path_override = os.getenv("DB_PATH", "").strip()
 DB_PATH = Path(_db_path_override) if _db_path_override else Path(__file__).with_name("assessment_history.db")
 BODHAN_API_KEY = os.getenv("BODHAN_API_KEY", "").strip()
-BODHAN_BASE_URL = "https://api.bodhan.ai/v1"
+BODHAN_TTS_BASE_URL = os.getenv("BODHAN_TTS_BASE_URL", "https://api.bodhan.ai/v1").strip()
+TTS_MODEL = os.getenv("TTS_MODEL", "indic-speak").strip()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_ALLOWED_DOMAINS = {
     domain.strip().lower()
@@ -85,6 +89,7 @@ if not SESSION_SECRET:
         "in .env to persist sessions across restarts."
     )
 SESSION_TOKEN_MAX_AGE_SECONDS = 30 * 24 * 60 * 60  # 30 days
+SESSION_COOKIE_NAME = "autoassessment_session"
 
 
 def issue_session_token(email: str) -> str:
@@ -102,6 +107,8 @@ def get_user_email(request: Request) -> str:
     """
     auth_header = request.headers.get("Authorization", "")
     token = auth_header[7:] if auth_header.lower().startswith("bearer ") else ""
+    if not token:
+        token = request.cookies.get(SESSION_COOKIE_NAME, "")
     if not token or "." not in token:
         raise HTTPException(status_code=401, detail="Sign-in required.")
     try:
@@ -142,7 +149,7 @@ def get_tts_client() -> OpenAI:
                 status_code=500,
                 detail="BODHAN_API_KEY environment variable is missing.",
             )
-        _tts_client = OpenAI(base_url=BODHAN_BASE_URL, api_key=BODHAN_API_KEY)
+        _tts_client = OpenAI(base_url=BODHAN_TTS_BASE_URL, api_key=BODHAN_API_KEY)
     return _tts_client
 
 
@@ -504,7 +511,7 @@ def get_auth_config() -> dict:
 
 
 @app.post("/api/auth/google")
-def authenticate_google(payload: GoogleAuthRequest) -> dict:
+def authenticate_google(payload: GoogleAuthRequest, response: Response) -> dict:
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(
             status_code=500,
@@ -532,14 +539,31 @@ def authenticate_google(payload: GoogleAuthRequest) -> dict:
             detail="This Google account is not allowed to access AutoAssessment.",
         )
 
+    session_token = issue_session_token(email)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        session_token,
+        max_age=SESSION_TOKEN_MAX_AGE_SECONDS,
+        httponly=True,
+        secure=os.getenv("AUTH_COOKIE_SECURE", "").lower() == "true",
+        samesite="lax",
+        path="/",
+    )
+
     return {
         "user": {
             "email": email,
             "name": claims.get("name") or email,
             "picture": claims.get("picture") or "",
         },
-        "token": issue_session_token(email),
+        "token": session_token,
     }
+
+
+@app.post("/api/auth/signout")
+def sign_out(response: Response) -> dict:
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return {"signed_out": True}
 
 def _prepare_batch_shared_context(payload: dict) -> dict:
     """
@@ -762,7 +786,7 @@ def _evaluate_batch_student(
     return report, context
 
 
-def load_assessment(assessment_id: str) -> tuple[AssessmentReport, dict]:
+def load_assessment(assessment_id: str, user_email: str = "") -> tuple[AssessmentReport, dict]:
     """
     Loads an assessment fresh from the DB into a local dict, rather than
     onto shared instance state — get_assessment_system() returns one
@@ -772,10 +796,16 @@ def load_assessment(assessment_id: str) -> tuple[AssessmentReport, dict]:
     equivalent of this same rule).
     """
     with sqlite3.connect(DB_PATH) as connection:
-        row = connection.execute(
-            "SELECT report_json, context_json FROM assessments WHERE assessment_id = ?",
-            (assessment_id,),
-        ).fetchone()
+        if user_email:
+            row = connection.execute(
+                "SELECT report_json, context_json FROM assessments WHERE assessment_id = ? AND user_email = ?",
+                (assessment_id, user_email),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT report_json, context_json FROM assessments WHERE assessment_id = ?",
+                (assessment_id,),
+            ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Assessment not found.")
 
@@ -830,6 +860,11 @@ def _parse_uploads(form) -> dict:
         or form.get("instructions")
         or ""
     )
+    ocr_preview_raw = str(form.get("ocr_preview_json") or "").strip()
+    try:
+        ocr_preview = json.loads(ocr_preview_raw) if ocr_preview_raw else {}
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=422, detail="Invalid OCR preview JSON.") from error
 
     # ---------------------------------------------------------
     # Question paper / rubric
@@ -1076,7 +1111,178 @@ def _parse_uploads(form) -> dict:
 
         "question_paper_filename": qp_filename,
         "student_filename": student_filename,
+        "ocr_preview": ocr_preview,
     }
+
+
+def _transcribe_document_parts(
+    *,
+    base_text: str = "",
+    images: Optional[list[Image.Image]] = None,
+    pdf_bytes: Optional[bytes] = None,
+    pdf_filename: str = "document.pdf",
+    label: str = "document",
+) -> tuple[str, list[dict]]:
+    assessment_system = get_assessment_system()
+    page_results: list[dict] = []
+    text_parts = [base_text.strip()] if base_text and base_text.strip() else []
+
+    if pdf_bytes:
+        text, pages = assessment_system.transcriber.run_pdf_with_pages(
+            pdf_bytes,
+            pdf_filename,
+        )
+        if text:
+            text_parts.append(text)
+        page_results.extend(page.as_dict() for page in pages)
+    elif images:
+        text, pages = assessment_system.transcriber.run_images_with_pages(
+            images,
+            label,
+        )
+        if text:
+            text_parts.append(text)
+        page_results.extend(page.as_dict() for page in pages)
+
+    return _join_text("", text_parts), page_results
+
+
+def _preview_single_payload(payload: dict) -> dict:
+    question_paper_text, question_pages = _transcribe_document_parts(
+        base_text=_join_text(payload["question_paper_text"], [payload["rubric_text"]]),
+        images=payload.get("qp_images"),
+        pdf_bytes=payload.get("qp_pdf_bytes"),
+        pdf_filename=payload.get("qp_pdf_filename", "question_paper.pdf"),
+        label="question-paper images",
+    )
+    student_answer_text, student_pages = _transcribe_document_parts(
+        base_text=payload["student_answer_text"],
+        images=payload.get("student_images"),
+        pdf_bytes=payload.get("student_pdf_bytes"),
+        pdf_filename=payload.get("student_pdf_filename", "student_submission.pdf"),
+        label="student-submission images",
+    )
+    model_answer_text, model_pages = _transcribe_document_parts(
+        base_text=payload["model_answer_text"],
+        images=payload.get("model_answer_images"),
+        pdf_bytes=payload.get("model_answer_pdf_bytes"),
+        pdf_filename=payload.get("model_answer_pdf_filename", "model_answer.pdf"),
+        label="official-model-answer images",
+    )
+
+    return {
+        "mode": "single",
+        "question_paper_text": question_paper_text,
+        "rubric_text": "",
+        "student_answer_text": student_answer_text,
+        "model_answer_text": model_answer_text,
+        "custom_instructions": payload.get("custom_instructions", ""),
+        "question_paper_filename": payload.get("question_paper_filename", "question_paper"),
+        "student_filename": payload.get("student_filename", "student_submission"),
+        "ocr_pages": {
+            "question_paper": question_pages,
+            "student_answer": student_pages,
+            "model_answer": model_pages,
+        },
+    }
+
+
+def _fallback_ocr_page(text: str, source: str) -> list[dict]:
+    clean_text = str(text or "").strip()
+    if not clean_text:
+        return []
+    return [
+        {
+            "page": 1,
+            "text": clean_text,
+            "provider": "saved-text",
+            "cached": False,
+            "error": "",
+            "source": source,
+        }
+    ]
+
+
+def _normalize_saved_ocr_preview(context: dict) -> dict:
+    preview = context.get("ocr_preview") or {}
+    if isinstance(preview, dict) and isinstance(preview.get("ocr_pages"), dict):
+        return {
+            "question_paper": preview["ocr_pages"].get("question_paper", []),
+            "student_answer": preview["ocr_pages"].get("student_answer", []),
+            "model_answer": preview["ocr_pages"].get("model_answer", []),
+        }
+    if isinstance(preview, dict) and any(
+        isinstance(preview.get(key), list)
+        for key in ("question_paper", "student_answer", "model_answer")
+    ):
+        return {
+            "question_paper": preview.get("question_paper", []),
+            "student_answer": preview.get("student_answer", []),
+            "model_answer": preview.get("model_answer", []),
+        }
+    return {
+        "question_paper": _fallback_ocr_page(context.get("question_paper", ""), "final extracted question paper"),
+        "student_answer": _fallback_ocr_page(context.get("student_work", ""), "final extracted student answer"),
+        "model_answer": _fallback_ocr_page(context.get("answer_key", ""), "final/generated answer key"),
+    }
+
+
+@app.post("/api/ocr/preview")
+async def preview_ocr(request: Request):
+    get_user_email(request)
+    form = await request.form()
+
+    answer_files = [
+        value
+        for value in form.getlist("answer_files")
+        if hasattr(value, "filename") and value.filename
+    ]
+
+    if answer_files:
+        common_form = FormData([
+            (key, value)
+            for key, value in form.multi_items()
+            if key not in {
+                "answer_files",
+                "student_ids",
+            }
+        ])
+        shared_payload = _parse_uploads(common_form)
+        preview = await asyncio.to_thread(_preview_single_payload, shared_payload)
+
+        requested_ids = [
+            str(value).strip()
+            for value in form.getlist("student_ids")
+        ]
+        answers = []
+        for index, upload in enumerate(answer_files):
+            student_payload = _parse_batch_student_file(upload)
+            text, pages = await asyncio.to_thread(
+                _transcribe_document_parts,
+                base_text=student_payload["student_answer_text"],
+                images=student_payload["student_images"],
+                pdf_bytes=student_payload["student_pdf_bytes"],
+                pdf_filename=student_payload["student_pdf_filename"],
+                label=f"student-submission images {index + 1}",
+            )
+            answers.append(
+                {
+                    "student_id": requested_ids[index] if index < len(requested_ids) and requested_ids[index] else upload.filename,
+                    "filename": upload.filename,
+                    "student_answer_text": text,
+                    "ocr_pages": pages,
+                }
+            )
+
+        preview["mode"] = "batch"
+        preview["answers"] = answers
+        preview.pop("student_answer_text", None)
+        preview["student_filename"] = f"{len(answers)} answer files"
+        return preview
+
+    payload = _parse_uploads(form)
+    return await asyncio.to_thread(_preview_single_payload, payload)
+
 
 init_db()
 
@@ -1084,14 +1290,23 @@ init_db()
 @app.get("/api/models")
 def get_pipeline_models():
     """Return the exact runtime configuration of the assessment pipeline."""
+    transcriber_provider = "Bodhan AI" if BODHAN_OCR_ENABLED else "Google Gemini"
+    transcriber_model = BODHAN_OCR_MODEL if BODHAN_OCR_ENABLED else TRANSCRIPTION_MODEL
+    transcriber_cost = (
+        "Billed per OCR page/request by Bodhan."
+        if BODHAN_OCR_ENABLED
+        else "Uses Gemini vision OCR because the configured Bodhan key is for indic-speak TTS."
+    )
 
     return {
         "agents": [
             {
                 "agent": "Transcriber",
                 "role": "Multimodal Document Transcription",
-                "model": TRANSCRIPTION_MODEL,
+                "provider": transcriber_provider,
+                "model": transcriber_model,
                 "type": "Vision",
+                "cost_note": transcriber_cost,
                 "desc": (
                     "Transcribes handwritten and typed PDFs/images "
                     "into structured Markdown while preserving questions, "
@@ -1101,8 +1316,10 @@ def get_pipeline_models():
             {
                 "agent": "Solver",
                 "role": "Reference Answer Generation",
+                "provider": "Google Gemini",
                 "model": GRADING_MODEL,
                 "type": "Reasoning",
+                "cost_note": "One generation call when no official answer key is supplied.",
                 "desc": (
                     "Generates a step-by-step reference answer key when "
                     "an official model answer is not provided."
@@ -1111,8 +1328,10 @@ def get_pipeline_models():
             {
                 "agent": "Evaluator",
                 "role": "Evidence-Anchored Rubric Grading",
+                "provider": "Google Gemini",
                 "model": GRADING_MODEL,
                 "type": "Structured Output",
+                "cost_note": "One structured grading call per student, plus visual checks when needed.",
                 "desc": (
                     "Grades each answer against the rubric, assigns "
                     "criterion-level scores, cites student evidence, "
@@ -1122,8 +1341,10 @@ def get_pipeline_models():
             {
                 "agent": "Auditor",
                 "role": "Deterministic Score Validation",
+                "provider": "Local",
                 "model": "Python",
                 "type": "Deterministic Guardrail",
+                "cost_note": "No model cost.",
                 "desc": (
                     "Checks score bounds, duplicate question IDs, "
                     "criterion totals, and arithmetic invariants "
@@ -1133,8 +1354,10 @@ def get_pipeline_models():
             {
                 "agent": "Regrade Agent",
                 "role": "Evidence-Based Re-evaluation",
+                "provider": "Google Gemini",
                 "model": GRADING_MODEL,
                 "type": "Verification",
+                "cost_note": "Runs only when a re-evaluation is requested.",
                 "desc": (
                     "Re-evaluates specific grading disputes and verifies "
                     "student evidence before allowing score changes."
@@ -1143,8 +1366,10 @@ def get_pipeline_models():
             {
                 "agent": "Chat Agent",
                 "role": "Assessment-Grounded Tutoring",
+                "provider": "Google Gemini",
                 "model": CHAT_MODEL,
                 "type": "Interactive",
+                "cost_note": "Runs per chat response with assessment context.",
                 "desc": (
                     "Answers multi-turn student questions using the rubric, "
                     "reference answer, submission, and graded report as context."
@@ -1152,6 +1377,20 @@ def get_pipeline_models():
             },
         ]
     }
+
+
+@app.get("/api/system/check")
+def get_system_check() -> dict:
+    return {
+        "bodhan_api_key": bool(BODHAN_API_KEY),
+        "poppler_available": shutil.which("pdftoppm") is not None,
+        "pdf_ocr_note": (
+            "PDF OCR is ready."
+            if shutil.which("pdftoppm") is not None
+            else "PDF OCR needs Poppler. Install it with: brew install poppler"
+        ),
+    }
+
 
 @app.post("/api/assess")
 @app.post("/evaluate")
@@ -1203,6 +1442,8 @@ async def assess_submission(request: Request):
             prior_weak_areas=prior_weak_areas,
             corrections_lookup=lambda qp: format_corrections_for_prompt(get_grading_corrections(qp)),
         )
+        if payload.get("ocr_preview"):
+            context["ocr_preview"] = payload["ocr_preview"]
 
         update_student_memory(user_email, report)
 
@@ -1276,9 +1517,24 @@ async def recent_assessments(request: Request, limit: int = 20,):
 
 
 @app.get("/api/assessments/{assessment_id}")
-async def get_assessment(assessment_id: str):
-    report, _context = load_assessment(assessment_id)
+async def get_assessment(assessment_id: str, request: Request):
+    user_email = get_user_email(request)
+    report, _context = load_assessment(assessment_id, user_email)
     return _reshape_report(report, assessment_id)
+
+
+@app.get("/api/assessments/{assessment_id}/ocr")
+async def get_assessment_ocr(assessment_id: str, request: Request):
+    user_email = get_user_email(request)
+    with sqlite3.connect(DB_PATH) as connection:
+        row = connection.execute(
+            "SELECT context_json FROM assessments WHERE assessment_id = ? AND user_email = ?",
+            (assessment_id, user_email),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+    context = json.loads(row[0])
+    return {"ocr_preview": _normalize_saved_ocr_preview(context)}
 
 
 @app.delete("/api/assessments/{assessment_id}")
@@ -1308,7 +1564,8 @@ async def regrade_question(request: Request):
         if len(claimed_mistake) < 8:
             raise HTTPException(status_code=400, detail="Describe a specific grading mistake (at least 8 characters).")
 
-        _report, context = load_assessment(assessment_id)
+        user_email = get_user_email(request)
+        _report, context = load_assessment(assessment_id, user_email)
         assessment_system = get_assessment_system()
         dispute = RegradeRequest(
             disputed_criterion=str(body.get("disputed_criterion") or "").strip() or None,
@@ -1348,7 +1605,8 @@ async def chat_with_agent(request: Request):
         assessment_id = str(body.get("assessment_id") or "").strip()
         if not assessment_id:
             raise HTTPException(status_code=400, detail="assessment_id is required.")
-        _report, context = load_assessment(assessment_id)
+        user_email = get_user_email(request)
+        _report, context = load_assessment(assessment_id, user_email)
         assessment_system = get_assessment_system()
 
         conversation = [
@@ -1371,14 +1629,14 @@ async def chat_with_agent(request: Request):
         raise HTTPException(status_code=500, detail="Chat processing failed. Check server logs.")
 
 @app.post("/api/chat/stream")
-async def chat_stream_with_agent(request: ChatRequest):
-    if not request.assessment_id:
+async def chat_stream_with_agent(payload: ChatRequest, request: Request):
+    if not payload.assessment_id:
         raise HTTPException(
             status_code=400,
             detail="assessment_id is required."
         )
 
-    if not request.messages:
+    if not payload.messages:
         raise HTTPException(
             status_code=400,
             detail="At least one chat message is required."
@@ -1386,13 +1644,14 @@ async def chat_stream_with_agent(request: ChatRequest):
 
     try:
 
-        _report, loaded_context = load_assessment(request.assessment_id)
+        user_email = get_user_email(request)
+        _report, loaded_context = load_assessment(payload.assessment_id, user_email)
         assessment_system = get_assessment_system()
         context = assessment_system._chat_context(loaded_context)
 
         conversation = "\n".join(
             f"{message.role.upper()}: {message.content}"
-            for message in request.messages[-10:]
+            for message in payload.messages[-10:]
         )
 
         prompt = (
@@ -1454,12 +1713,17 @@ async def assess_batch(request: Request):
         batch_id = str(uuid.uuid4())
 
         form = await request.form()
+        preview_payload_raw = str(form.get("preview_payload") or "").strip()
+        try:
+            preview_payload = json.loads(preview_payload_raw) if preview_payload_raw else None
+        except json.JSONDecodeError as error:
+            raise HTTPException(status_code=422, detail="Invalid OCR preview payload.") from error
 
         answer_files = list(
             form.getlist("answer_files")
         )
 
-        if not answer_files:
+        if not answer_files and not preview_payload:
             raise HTTPException(
                 status_code=422,
                 detail="No student answer sheets were provided.",
@@ -1469,32 +1733,54 @@ async def assess_batch(request: Request):
         max_batch_size = int(
             os.getenv("MAX_BATCH_SIZE", "25")
         )
+        preview_answers = preview_payload.get("answers", []) if isinstance(preview_payload, dict) else []
+        answer_count = len(preview_answers) if preview_payload else len(answer_files)
 
-        if len(answer_files) > max_batch_size:
+        if answer_count > max_batch_size:
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"Batch contains {len(answer_files)} students; "
+                    f"Batch contains {answer_count} students; "
                     f"maximum allowed is {max_batch_size}."
                 ),
             )
 
-        # -----------------------------------------------------
-        # Parse common material WITHOUT answer_files.
-        # This lets us reuse your existing upload parser.
-        # -----------------------------------------------------
-        common_form = FormData([
-            (key, value)
-            for key, value in form.multi_items()
-            if key not in {
-                "answer_files",
-                "student_ids",
+        if preview_payload:
+            shared_payload = {
+                "question_paper_text": str(preview_payload.get("question_paper_text") or ""),
+                "rubric_text": str(preview_payload.get("rubric_text") or ""),
+                "student_answer_text": "",
+                "model_answer_text": str(preview_payload.get("model_answer_text") or ""),
+                "custom_instructions": str(form.get("instructions") or preview_payload.get("custom_instructions") or ""),
+                "qp_images": [],
+                "student_images": [],
+                "model_answer_images": [],
+                "qp_pdf_bytes": None,
+                "student_pdf_bytes": None,
+                "model_answer_pdf_bytes": None,
+                "qp_pdf_filename": str(preview_payload.get("question_paper_filename") or "question_paper"),
+                "student_pdf_filename": "student_submission",
+                "model_answer_pdf_filename": "model_answer",
+                "question_paper_filename": str(preview_payload.get("question_paper_filename") or "question_paper"),
+                "student_filename": "batch_preview",
             }
-        ])
+        else:
+            # -------------------------------------------------
+            # Parse common material WITHOUT answer_files.
+            # This lets us reuse your existing upload parser.
+            # -------------------------------------------------
+            common_form = FormData([
+                (key, value)
+                for key, value in form.multi_items()
+                if key not in {
+                    "answer_files",
+                    "student_ids",
+                }
+            ])
 
-        shared_payload = _parse_uploads(
-            common_form
-        )
+            shared_payload = _parse_uploads(
+                common_form
+            )
 
         if not (
             shared_payload["question_paper_text"]
@@ -1508,7 +1794,7 @@ async def assess_batch(request: Request):
 
         print(
             f"[Batch] Preparing common material for "
-            f"{len(answer_files)} student(s)"
+            f"{answer_count} student(s)"
         )
 
         # Gemini calls are synchronous, therefore move them
@@ -1521,44 +1807,82 @@ async def assess_batch(request: Request):
         # -----------------------------------------------------
         # Student IDs
         # -----------------------------------------------------
-        requested_ids = [
-            str(value).strip()
-            for value in form.getlist("student_ids")
-        ]
-
         students = []
         seen_ids = set()
 
-        for index, upload in enumerate(answer_files):
-            payload = _parse_batch_student_file(
-                upload
-            )
+        if preview_payload:
+            for index, item in enumerate(preview_answers):
+                student_id = str(item.get("student_id") or item.get("filename") or f"Student {index + 1}").strip()
+                filename = str(item.get("filename") or student_id).strip()
+                payload = {
+                    "student_answer_text": str(item.get("student_answer_text") or ""),
+                    "student_images": [],
+                    "student_pdf_bytes": None,
+                    "student_pdf_filename": filename,
+                    "student_filename": filename,
+                    "ocr_pages": item.get("ocr_pages") or [],
+                }
 
-            student_id = (
-                requested_ids[index]
-                if index < len(requested_ids)
-                and requested_ids[index]
-                else upload.filename
-            )
+                if not payload["student_answer_text"].strip():
+                    continue
 
-            # Avoid dictionary collisions if filenames repeat.
-            original_id = student_id
-            suffix = 2
+                original_id = student_id
+                suffix = 2
 
-            while student_id in seen_ids:
+                while student_id in seen_ids:
+                    student_id = f"{original_id} ({suffix})"
+                    suffix += 1
+
+                seen_ids.add(student_id)
+
+                students.append(
+                    (
+                        student_id,
+                        filename,
+                        payload,
+                    )
+                )
+        else:
+            requested_ids = [
+                str(value).strip()
+                for value in form.getlist("student_ids")
+            ]
+
+            for index, upload in enumerate(answer_files):
+                payload = _parse_batch_student_file(
+                    upload
+                )
+
                 student_id = (
-                    f"{original_id} ({suffix})"
+                    requested_ids[index]
+                    if index < len(requested_ids)
+                    and requested_ids[index]
+                    else upload.filename
                 )
-                suffix += 1
 
-            seen_ids.add(student_id)
+                # Avoid dictionary collisions if filenames repeat.
+                original_id = student_id
+                suffix = 2
 
-            students.append(
-                (
-                    student_id,
-                    upload.filename,
-                    payload,
+                while student_id in seen_ids:
+                    student_id = (
+                        f"{original_id} ({suffix})"
+                    )
+                    suffix += 1
+
+                seen_ids.add(student_id)
+
+                students.append(
+                    (
+                        student_id,
+                        upload.filename,
+                        payload,
+                    )
                 )
+        if not students:
+            raise HTTPException(
+                status_code=422,
+                detail="No readable student answer text was provided.",
             )
 
         # -----------------------------------------------------
@@ -1598,6 +1922,7 @@ async def assess_batch(request: Request):
                         "filename": filename,
                         "report": report,
                         "context": context,
+                        "ocr_pages": payload.get("ocr_pages") or [],
                         "error": None,
                     }
 
@@ -1647,6 +1972,12 @@ async def assess_batch(request: Request):
 
             report = item["report"]
             context = item["context"]
+            if preview_payload:
+                context["ocr_preview"] = {
+                    "question_paper": preview_payload.get("ocr_pages", {}).get("question_paper", []),
+                    "model_answer": preview_payload.get("ocr_pages", {}).get("model_answer", []),
+                    "student_answer": item.get("ocr_pages", []),
+                }
 
             update_student_memory(user_email, report, student_key=student_id)
 
@@ -1677,8 +2008,6 @@ async def assess_batch(request: Request):
                 },
             )
 
-        batch_id = str(uuid.uuid4())
-
         print(
             f"[Batch] Finished {batch_id}: "
             f"{len(results)} succeeded, "
@@ -1689,7 +2018,7 @@ async def assess_batch(request: Request):
             "batch_id": batch_id,
             "results": results,
             "errors": errors,
-            "total": len(answer_files),
+            "total": answer_count,
             "completed": len(results),
             "failed": len(errors),
         }
@@ -1750,11 +2079,12 @@ def _trim_for_speech(text: str, limit: int = SPEECH_CHAR_LIMIT) -> str:
     return window[: cutoff + 1] if cutoff > limit // 2 else window.rsplit(" ", 1)[0] + "."
 
 @app.post("/api/voice/synthesize")
-async def synthesize_voice(request: TTSRequest):
+async def synthesize_voice(request: TTSRequest, raw_request: Request):
     """
-    Synthesizes natural speech audio using the Bodhan "indic-speak" TTS model.
+    Synthesizes natural speech audio using Bodhan's OpenAI-compatible TTS API.
     Returns a playable audio stream directly to the frontend.
     """
+    get_user_email(raw_request)
     clean_text = _trim_for_speech(_clean_for_speech(request.text))
     if not clean_text:
         raise HTTPException(status_code=400, detail="Empty text provided")
@@ -1763,7 +2093,7 @@ async def synthesize_voice(request: TTSRequest):
     try:
         speech = await asyncio.to_thread(
             client.audio.speech.create,
-            model="indic-speak",
+            model=TTS_MODEL,
             input=clean_text,
             voice=request.voice,
             instructions=json.dumps({"lang": request.lang}),

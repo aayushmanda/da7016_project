@@ -2,3 +2,8 @@ examples
 .env
 # .venv
 auto_assessment/__pycache__
+__pycache__/
+*.py[cod]
+.cache/
+auto_assessment/frontend/node_modules/
+auto_assessment/frontend/dist/

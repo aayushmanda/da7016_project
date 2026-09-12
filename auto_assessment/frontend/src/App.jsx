@@ -2371,7 +2371,7 @@ const handleSpeak = (text, index) => {
 
             <div className="upload-grid">
               <div className="dropzone-card">
-                <span className="dropzone-label">1. Rubric / Question Paper</span>
+                <span className="dropzone-label">1. Rubric & Question Paper</span>
                 <label className="upload-pill">
                   <span className="upload-icon" aria-hidden="true"><Icon name="document" /></span>
                   <span className="upload-text">
@@ -2395,7 +2395,7 @@ const handleSpeak = (text, index) => {
 
               <div className="dropzone-card">
                 <span className="dropzone-label">
-                  2. Student Answer Sheet{answerFiles.length !== 1 ? "s" : ""}
+                  2. Student's Answer Sheet{answerFiles.length !== 1 ? "s" : ""}
                 </span>
                 <label className="upload-pill">
                   <span className="upload-icon" aria-hidden="true"><Icon name="note" /></span>
@@ -2889,6 +2889,20 @@ const handleSpeak = (text, index) => {
                         ))}
                       </div>
                     )}
+                  </div>
+                )}
+
+                {!looksUngradable && activeReport?.submission_mismatch_warning && (
+                  <div className="no-grade-panel">
+                    <div>
+                      <span className="dropzone-label">Possible wrong paper</span>
+                      <h2>This submission may not match the question paper</h2>
+                      <p>{activeReport.submission_mismatch_warning}</p>
+                      <p>
+                        Every question below has been marked for review as a precaution — please confirm this is the
+                        right submission before trusting any of these scores.
+                      </p>
+                    </div>
                   </div>
                 )}
 

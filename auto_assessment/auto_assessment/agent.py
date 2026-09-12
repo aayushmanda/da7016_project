@@ -141,6 +141,15 @@ class QuestionEvaluation(BaseModel):
 class AssessmentReport(BaseModel):
     evaluations: list[QuestionEvaluation] = Field(default_factory=list)
     overall_summary: str = Field(default="")
+    submission_mismatch_warning: str = Field(
+        default="",
+        description=(
+            "Non-empty only if the student submission does not appear to be an attempt at "
+            "THIS question paper at all — e.g. it's for a different subject, exam, or assignment "
+            "entirely. State briefly what looks wrong. Leave empty for a genuine attempt, even a "
+            "weak or mostly-blank one."
+        ),
+    )
     strengths: list[str] = Field(
         default_factory=list,
         description="Key conceptual strengths demonstrated across questions.",
@@ -647,6 +656,13 @@ class EvaluatorAgent:
         )
         prompt = (
             "You are an academic evaluator producing rigorous, highly actionable, and growth-oriented feedback.\n\n"
+            "SUBMISSION SANITY CHECK: Before grading, check whether the student submission is even an attempt at "
+            "THIS exact question paper. If it looks like a different subject, exam, or assignment entirely — not "
+            "just a weak, incomplete, or mostly-blank attempt at THIS one — set 'submission_mismatch_warning' to a "
+            "brief explanation of what looks wrong, then still grade each question as best you can against whatever "
+            "is actually there (scoring 0 wherever nothing relevant is found). A student who left every question "
+            "blank, or answered poorly, is still a genuine attempt and must NOT trigger this warning — leave it "
+            "empty in that case.\n\n"
             "GRADING & FEEDBACK REQUIREMENTS:\n"
             "1. STRICT EVIDENCE ANCHORING: For every criterion, copy a short verbatim evidence_quote from the student "
             "submission if present. Never hallucinate student working.\n"
@@ -656,7 +672,11 @@ class EvaluatorAgent:
             "   - 'actionable_takeaway': Provide 1 concrete, memorable rule or step the student should write next time to secure full marks (e.g., 'Always write out the elimination step 3x = 15 before stating x = 5').\n"
             "3. STRENGTHS & GROWTH AREAS: In the overall summary, identify 2-3 genuine conceptual strengths and 2-3 concrete execution habits to improve.\n"
             "4. ARITHMETIC INTEGRITY: Criterion scores must sum exactly to question score. Scores cannot exceed weights or max_score.\n"
-            "5. UNCERTAINTY: If handwriting is illegible or missing, mark needs_human_review=true rather than guessing.\n"
+            "5. UNCERTAINTY & UNATTEMPTED QUESTIONS: If handwriting is illegible, mark needs_human_review=true rather "
+            "than guessing. If a question has no corresponding answer anywhere in the submission — the student "
+            "skipped it entirely, as opposed to writing something illegible — score it 0, leave 'student_answer' "
+            "empty, and say plainly in the feedback that no answer was provided. Never invent or infer an answer "
+            "the student did not write, and never award partial credit for a blank question.\n"
             "6. PER-QUESTION TEXT: For every question, also populate:\n"
             "   - 'question_text': the exact question as printed in the QUESTION PAPER, copied verbatim (include sub-parts if any).\n"
             "   - 'student_answer': the complete verbatim text the student wrote for THIS question only — copy their full "
@@ -795,8 +815,17 @@ class AuditAgent:
                     crit.evidence_quote and normalize_for_match(crit.evidence_quote) not in normalized_work
                     for crit in item.criterion_scores
                 )
-                if has_unverified_evidence:
+                # A skipped question awarded points despite no answer on record is either a
+                # model mistake or an OCR/transcription miss — either way, not safe to trust.
+                credited_with_no_answer = item.score > 0 and not item.student_answer.strip()
+                if has_unverified_evidence or credited_with_no_answer:
                     item.needs_human_review = True
+
+        # The submission doesn't appear to match this question paper at all — nothing in
+        # this report is trustworthy until a human confirms it, so every question is flagged.
+        if report.submission_mismatch_warning.strip():
+            for item in report.evaluations:
+                item.needs_human_review = True
 
         return report
 

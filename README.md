@@ -6,6 +6,10 @@ Handles PDFs, images, plain text, and DOCX. Grades one submission or a whole bat
 
 <video src="https://github.com/user-attachments/assets/af0ab536-f000-4899-8e4f-44b010bf782e" controls width="100%"></video>
 
+**Full run-through:**
+
+<video src="run.mp4" controls width="100%"></video>
+
 ---
 
 ## How it works

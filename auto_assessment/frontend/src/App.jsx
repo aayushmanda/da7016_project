@@ -241,6 +241,38 @@ function Icon({ name, className }) {
         <path d="M13.3 16.3L16 19" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
       </>
     ),
+    check: (
+      <polyline points="20 6 9 17 4 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    ),
+    cross: (
+      <>
+        <line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    partial: (
+      <>
+        <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
+        <line x1="8" y1="12" x2="16" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    lightbulb: (
+      <path
+        d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.3h6c0-1 .4-1.8 1-2.3A7 7 0 0 0 12 2z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    ),
+    alertTriangle: (
+      <>
+        <path d="M12 3 2 20h20L12 3z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" fill="none" />
+        <line x1="12" y1="9" x2="12" y2="14" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+        <circle cx="12" cy="17.2" r="1" fill="currentColor" stroke="none" />
+      </>
+    ),
   };
 
   return (
@@ -996,6 +1028,7 @@ const speakText = (text) => {
 
 const [speakingIndex, setSpeakingIndex] = useState(null);
 const [speechLoadingIndex, setSpeechLoadingIndex] = useState(null);
+const [speechError, setSpeechError] = useState(null);
 const speechAudioRef = useRef(null);
 const speechUrlRef = useRef(null);
 const speechSessionRef = useRef(0);
@@ -1067,6 +1100,7 @@ const handleSpeak = (text, index) => {
   }
 
   stopSpeaking();
+  setSpeechError(null);
   const mySession = speechSessionRef.current;
 
   const chunks = splitIntoSpeechChunks(text);
@@ -1106,12 +1140,20 @@ const handleSpeak = (text, index) => {
       audio.onerror = () => {
         URL.revokeObjectURL(url);
         stopSpeaking();
+        setSpeechError({ index, message: "Audio playback failed. Please try again." });
       };
       await audio.play();
     } catch (err) {
       stopSpeaking();
       if (err.message === "VOICE_AUTH_EXPIRED") {
         handleSignOut();
+      } else {
+        setSpeechError({
+          index,
+          message: err.message === "Voice synthesis failed"
+            ? "Could not generate audio for this response. Please try again."
+            : "Could not play audio. Please try again.",
+        });
       }
     }
   };
@@ -1159,6 +1201,7 @@ const handleSpeak = (text, index) => {
 
   const [historyList, setHistoryList] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
 
@@ -1438,6 +1481,7 @@ const handleSpeak = (text, index) => {
 
   const loadHistory = async () => {
     setHistoryLoading(true);
+    setHistoryError(null);
 
     try {
       const res = await fetch(
@@ -1459,15 +1503,15 @@ const handleSpeak = (text, index) => {
       if (!res.ok) {
         const data = await res.json();
         console.error("History error:", data);
+        setHistoryError(parseErrorMessage(res.status, data.detail) || "Could not load your saved assessments.");
         return;
       }
 
       const data = await res.json();
-      console.log("History:", data);
-
       setHistoryList(data.assessments || []);
     } catch (err) {
       console.error("Failed to load history:", err);
+      setHistoryError(err.message || "Could not load your saved assessments.");
     } finally {
       setHistoryLoading(false);
     }
@@ -2213,6 +2257,7 @@ const handleSpeak = (text, index) => {
               className={`nav-item ${activeTab === item.id ? "nav-item-active" : ""}`}
               onClick={() => goToTab(item.id)}
               title={item.label}
+              aria-label={item.label}
             >
               <Icon name={item.icon} />
               {sidebarOpen && <span>{item.label}</span>}
@@ -2222,8 +2267,12 @@ const handleSpeak = (text, index) => {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="status-chip">
-            <span className={`status-dot ${response ? "status-dot-ready" : ""}`} />
+          <div
+            className="status-chip"
+            title={response ? "Assessment ready" : "No assessment yet"}
+            aria-label={response ? "Assessment ready" : "No assessment yet"}
+          >
+            <span className={`status-dot ${response ? "status-dot-ready" : ""}`} aria-hidden="true" />
             {sidebarOpen && (response ? "Assessment ready" : "No assessment yet")}
           </div>
         </div>
@@ -3209,7 +3258,16 @@ const handleSpeak = (text, index) => {
               </div>
             </header>
 
-            {historyList.length === 0 ? (
+            {historyError ? (
+              <div className="empty-state">
+                <div className="empty-icon" aria-hidden="true"><Icon name="alertTriangle" /></div>
+                <h3>Couldn't load your history</h3>
+                <p>{historyError}</p>
+                <button className="button button-primary" onClick={loadHistory} disabled={historyLoading}>
+                  {historyLoading ? "Retrying…" : "Try again"}
+                </button>
+              </div>
+            ) : historyList.length === 0 ? (
               <div className="empty-state">
                 <div className="empty-icon" aria-hidden="true"><Icon name="history" /></div>
                 <h3>No saved assessments</h3>
@@ -3333,6 +3391,9 @@ const handleSpeak = (text, index) => {
                             </button>
                           )}
                         </div>
+                        {speechError?.index === index && (
+                          <p className="speech-error-text">{speechError.message}</p>
+                        )}
                         <Markdown className="chat-markdown">{msg.content}</Markdown>
                       </div>
                     </div>

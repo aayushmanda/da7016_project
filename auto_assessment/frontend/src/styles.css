@@ -262,67 +262,6 @@ img, svg { max-width: 100%; }
 .status-dot-ready { background: var(--green); }
 
 
-.user-card {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  padding: 10px;
-  margin-bottom: 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
-}
-
-.user-avatar {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  object-fit: cover;
-  border: 1px solid var(--line);
-  background: var(--surface);
-}
-
-.user-avatar-fallback {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #ffffff;
-  font-weight: 700;
-  background: var(--brand-primary);
-  border-color: var(--brand-primary);
-}
-
-.user-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.user-meta strong,
-.user-meta span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.user-meta strong {
-  font-size: 0.84rem;
-  color: var(--ink);
-}
-
-.user-meta span {
-  font-size: 0.74rem;
-  color: var(--ink-faint);
-}
-
-.button-signout {
-  width: 100%;
-  margin-top: 8px;
-}
-
-
 .app-main {
   flex: 1;
   min-width: 0;
@@ -830,7 +769,7 @@ img, svg { max-width: 100%; }
   border-radius: 50%;
   background: var(--brand-primary);
   flex: 0 0 auto;
-  animation: workflow-live-blink 1.4s ease-in-out infinite;
+  animation: workflow-breathe 2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
 .workflow-timer {
@@ -940,7 +879,7 @@ img, svg { max-width: 100%; }
 .workflow-node-active {
   background: var(--brand-primary);
   border-color: var(--brand-primary);
-  box-shadow: 0 0 0 4px var(--brand-primary-soft);
+  animation: workflow-node-glow 2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
 .workflow-node-pulse {
@@ -948,7 +887,7 @@ img, svg { max-width: 100%; }
   height: 8px;
   border-radius: 50%;
   background: #ffffff;
-  animation: workflow-node-pulse 1.1s ease-in-out infinite;
+  animation: workflow-breathe 2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
 .workflow-step-label {
@@ -963,19 +902,19 @@ img, svg { max-width: 100%; }
   color: var(--brand-primary-dark);
 }
 
-@keyframes workflow-node-pulse {
-  0%, 100% { transform: scale(0.85); opacity: 0.7; }
-  50% { transform: scale(1.15); opacity: 1; }
+@keyframes workflow-breathe {
+  0%, 100% { transform: scale(0.94); opacity: 0.55; }
+  50% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes workflow-node-glow {
+  0%, 100% { box-shadow: 0 0 0 3px var(--brand-primary-soft); }
+  50% { box-shadow: 0 0 0 6px var(--brand-primary-soft); }
 }
 
 @keyframes workflow-bar-sheen {
   from { transform: translateX(-100%); }
   to { transform: translateX(100%); }
-}
-
-@keyframes workflow-live-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
 }
 
 
@@ -1878,6 +1817,8 @@ textarea:focus-visible,
 
 .chat-role { display: block; font-size: 0.7rem; font-weight: 600; margin-bottom: 4px; color: var(--ink-faint); }
 
+.speech-error-text { margin: 0 0 8px; color: var(--red); font-size: 0.8rem; font-weight: 600; }
+
 
 .chat-typing { display: flex; gap: 4px; padding: 14px 16px; }
 .typing-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-faint); animation: typing-bounce 1.1s infinite ease-in-out; }
@@ -2083,6 +2024,7 @@ textarea:focus-visible,
 @media (prefers-reduced-motion: reduce) {
   .workflow-stepper-track-fill::after,
   .workflow-node-pulse,
+  .workflow-node-active,
   .workflow-live-dot {
     animation: none;
   }
@@ -2399,65 +2341,6 @@ textarea:focus-visible,
   font-size: 0.78rem;
   font-style: italic;
   color: var(--ink-faint);
-}
-
-/* --- Agent Model Badges --- */
-.agent-models-strip {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-  width: 100%;
-  margin: 18px 0 24px 0;
-  box-sizing: border-box;
-}
-
-.agent-badge-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  box-shadow: 0 1px 3px var(--shadow-soft);
-}
-
-.agent-badge-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.agent-badge-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.agent-badge-tag {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background-color: var(--blue-tint);
-  color: var(--blue-dark);
-}
-
-.agent-badge-role {
-  font-size: 11px;
-  color: var(--ink-soft);
-  line-height: 1.3;
-}
-
-.agent-badge-model {
-  font-size: 11px;
-  font-family: monospace;
-  background: var(--surface-muted);
-  color: var(--ink-soft);
-  padding: 2px 6px;
-  border-radius: 4px;
-  width: fit-content;
-  margin-top: 4px;
 }
 
 .chat-mic-btn {

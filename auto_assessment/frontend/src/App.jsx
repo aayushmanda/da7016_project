@@ -149,9 +149,11 @@ function Icon({ name, className }) {
     ),
     score: (
       <>
-        <line x1="18" y1="20" x2="18" y2="10" stroke="currentColor" strokeWidth="2" />
-        <line x1="12" y1="20" x2="12" y2="4" stroke="currentColor" strokeWidth="2" />
-        <line x1="6" y1="20" x2="6" y2="14" stroke="currentColor" strokeWidth="2" />
+        <line x1="4" y1="2" x2="4" y2="20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <line x1="4" y1="20" x2="21" y2="20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <line x1="18" y1="20" x2="18" y2="10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <line x1="12" y1="20" x2="12" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <line x1="7.5" y1="20" x2="7.5" y2="14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       </>
     ),
     history: (
@@ -531,7 +533,7 @@ function reportToHtml(report, { studentName = "", generatedAt = new Date(), prin
   </script>
   <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
   <style>
-    @page { size: A4 portrait; margin: 0; }
+    @page { size: A4 portrait; margin: 26mm 24mm; }
     * { box-sizing: border-box; }
     html {
       background: #f4f6f8;
@@ -710,8 +712,8 @@ function reportToHtml(report, { studentName = "", generatedAt = new Date(), prin
     }
     @media print {
       html, body {
-        width: 210mm;
-        min-height: 297mm;
+        width: auto;
+        min-height: auto;
         background: #ffffff;
       }
       body {
@@ -720,10 +722,10 @@ function reportToHtml(report, { studentName = "", generatedAt = new Date(), prin
         -webkit-print-color-adjust: exact;
       }
       .report-shell {
-        width: 210mm;
-        min-height: 297mm;
+        width: auto;
+        min-height: auto;
         margin: 0;
-        padding: 26mm 24mm;
+        padding: 0;
         box-shadow: none;
       }
       .question-block, .report-section, .score-card { break-inside: avoid; }
@@ -840,7 +842,10 @@ function WorkflowProgress({
         <div>
           <span className="workflow-kicker">Processing</span>
           <h3>{title}</h3>
-          <p>{activeStep.label}: {activeStep.detail}</p>
+          <p>
+            <span className="workflow-live-dot" aria-hidden="true" />
+            {activeStep.label}: {activeStep.detail}
+          </p>
         </div>
         <div className="workflow-timer">
           <span>ETA</span>
@@ -848,22 +853,47 @@ function WorkflowProgress({
         </div>
       </div>
 
-      <div className="workflow-track" role="progressbar" aria-valuenow={progress} aria-valuemin="0" aria-valuemax="100">
-        <span style={{ width: `${Math.min(progress, 98)}%` }} />
-      </div>
-
-      <div className="workflow-steps">
-        {WORKFLOW_STEPS.map((step, index) => (
-          <div
-            key={step.id}
-            className={`workflow-step ${
-              index < activeIndex ? "workflow-step-done" : ""
-            } ${index === activeIndex ? "workflow-step-active" : ""}`}
-          >
-            <span className="workflow-dot" />
-            <span>{step.label}</span>
-          </div>
-        ))}
+      <div
+        className="workflow-stepper"
+        role="progressbar"
+        aria-valuenow={progress}
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-label={`${activeStep.label}: ${activeStep.detail}`}
+      >
+        <div className="workflow-stepper-track">
+          <span className="workflow-stepper-track-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <div className="workflow-stepper-items">
+          {WORKFLOW_STEPS.map((step, index) => {
+            const isDone = index < activeIndex;
+            const isActive = index === activeIndex;
+            return (
+              <div className="workflow-stepper-item" key={step.id}>
+                <span
+                  className={`workflow-node ${isDone ? "workflow-node-done" : ""} ${
+                    isActive ? "workflow-node-active" : ""
+                  }`}
+                >
+                  {isDone ? (
+                    <Icon name="check" />
+                  ) : isActive ? (
+                    <span className="workflow-node-pulse" />
+                  ) : (
+                    <span className="workflow-node-index">{index + 1}</span>
+                  )}
+                </span>
+                <span
+                  className={`workflow-step-label ${isDone ? "workflow-step-done" : ""} ${
+                    isActive ? "workflow-step-active" : ""
+                  }`}
+                >
+                  {step.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -1120,6 +1150,7 @@ const handleSpeak = (text, index) => {
   const [ocrPanelOpen, setOcrPanelOpen] = useState(false);
   const [isBatch, setIsBatch] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState(null);
+  const [batchErrors, setBatchErrors] = useState(null);
   const [hasNewResult, setHasNewResult] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
@@ -1138,6 +1169,10 @@ const handleSpeak = (text, index) => {
   const [questionPanelOpenFor, setQuestionPanelOpenFor] = useState(null);
   const [diagramPanelOpenFor, setDiagramPanelOpenFor] = useState(null);
   const [regradeNotes, setRegradeNotes] = useState({});
+  const [reviewLoading, setReviewLoading] = useState(null);
+  const [reviewError, setReviewError] = useState(null);
+  const [bulkReviewLoading, setBulkReviewLoading] = useState(false);
+  const [expandOverride, setExpandOverride] = useState({});
   const [authUser, setAuthUser] = useState(getStoredAuthUser);
   const [authConfig, setAuthConfig] = useState({ googleClientId: "", allowedDomains: [] });
   const [authLoading, setAuthLoading] = useState(false);
@@ -1786,6 +1821,7 @@ const handleSpeak = (text, index) => {
     }
     setErrorMsg("");
     setAssessmentError(null);
+    setBatchErrors(null);
     setLoading(true);
     const estimateSeconds = estimateWorkflowSeconds({
       mode: "assessment",
@@ -1826,7 +1862,14 @@ const handleSpeak = (text, index) => {
         let rawDetail = "";
         try {
           const errBody = await res.json();
-          rawDetail = errBody.detail || JSON.stringify(errBody);
+          if (errBody?.detail && typeof errBody.detail === "object") {
+            rawDetail = errBody.detail.message || JSON.stringify(errBody.detail);
+            if (errBody.detail.errors && Object.keys(errBody.detail.errors).length > 0) {
+              setBatchErrors(errBody.detail.errors);
+            }
+          } else {
+            rawDetail = errBody.detail || JSON.stringify(errBody);
+          }
         } catch {
           rawDetail = await res.text();
         }
@@ -1853,6 +1896,7 @@ const handleSpeak = (text, index) => {
       } else {
         setSelectedStudentId(null);
       }
+      setBatchErrors(useBatch && data.errors && Object.keys(data.errors).length > 0 ? data.errors : null);
       setRegradeNotes({});
       setHasNewResult(true);
       setActiveTab("results");
@@ -1982,6 +2026,51 @@ const handleSpeak = (text, index) => {
     }
   };
 
+  const handleMarkReviewed = async (questionId) => {
+    const noteKey = isBatch && selectedStudentId ? `${selectedStudentId}::${questionId}` : questionId;
+    setReviewLoading(noteKey);
+    setReviewError(null);
+    try {
+      const assessmentId = getActiveAssessmentId();
+      if (!assessmentId) throw new Error("No assessment is selected to review.");
+      const res = await fetch(`/api/assessments/${assessmentId}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        credentials: "include",
+        body: JSON.stringify({ question_id: questionId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(parseErrorMessage(res.status, data.detail));
+      }
+      if (isBatch && selectedStudentId) {
+        setResponse((prev) => ({
+          ...prev,
+          results: { ...prev.results, [selectedStudentId]: data.report },
+        }));
+      } else {
+        setResponse(data.report);
+      }
+    } catch (err) {
+      setReviewError({ noteKey, message: err.message || "Could not save the review." });
+    } finally {
+      setReviewLoading(null);
+    }
+  };
+
+  const handleMarkAllReviewed = async () => {
+    setBulkReviewLoading(true);
+    try {
+      for (const item of questionList) {
+        if (item?.question_id && !item.human_reviewed) {
+          await handleMarkReviewed(item.question_id);
+        }
+      }
+    } finally {
+      setBulkReviewLoading(false);
+    }
+  };
+
   const renderStatusIcon = (score, weight) => {
     const tier = getScoreTier(score, weight);
     if (tier === "high") return <span className="rubric-icon tier-high"><Icon name="check" /></span>;
@@ -1999,6 +2088,9 @@ const handleSpeak = (text, index) => {
     : resultData && typeof resultData === "object"
     ? Object.values(resultData)
     : [];
+
+  const pendingReviewCount = questionList.filter((q) => !q?.human_reviewed).length;
+  const allQuestionsReviewed = questionList.length > 0 && pendingReviewCount === 0;
 
   const getMaxScore = (q) => (q?.max_score ?? 10);
   const totalScore = questionList.reduce((sum, q) => sum + (q?.score || 0), 0);
@@ -2515,6 +2607,21 @@ const handleSpeak = (text, index) => {
 
             {errorMsg && <p className="error-text">{errorMsg}</p>}
 
+            {batchErrors && Object.keys(batchErrors).length > 0 && (
+              <div className="batch-errors-panel">
+                <strong>
+                  {Object.keys(batchErrors).length} student{Object.keys(batchErrors).length === 1 ? "" : "s"} could not be graded:
+                </strong>
+                <ul>
+                  {Object.entries(batchErrors).map(([studentId, message]) => (
+                    <li key={studentId}>
+                      <span className="batch-error-student">{studentId}</span>: {message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {assessmentError?.recoverable && (
               <div className="recovery-panel">
                 <div>
@@ -2572,13 +2679,30 @@ const handleSpeak = (text, index) => {
               <div>
                 <p className="view-eyebrow">Step 2 of 3</p>
                 <h1>Score feed</h1>
+                {questionList.length > 0 && pendingReviewCount > 0 && (
+                  <div className="review-gate-hint">
+                    <p>
+                      {pendingReviewCount} of {questionList.length} question{questionList.length === 1 ? "" : "s"} still
+                      need{pendingReviewCount === 1 ? "s" : ""} your review before you can export this report.
+                    </p>
+                    <button
+                      type="button"
+                      className="button button-ghost button-sm"
+                      disabled={bulkReviewLoading}
+                      onClick={handleMarkAllReviewed}
+                    >
+                      {bulkReviewLoading ? "Marking all reviewed…" : "All look correct — mark all reviewed"}
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="result-actions">
                 <div className="export-menu" ref={exportMenuRef}>
                   <button
                     className={`button button-secondary export-trigger ${exportMenuOpen ? "export-trigger-open" : ""}`}
                     onClick={() => setExportMenuOpen((open) => !open)}
-                    disabled={!response}
+                    disabled={!response || !allQuestionsReviewed}
+                    title={!allQuestionsReviewed ? "Review every question before exporting" : undefined}
                     aria-haspopup="menu"
                     aria-expanded={exportMenuOpen}
                   >
@@ -2646,6 +2770,21 @@ const handleSpeak = (text, index) => {
               </div>
             ) : (
               <>
+                {isBatch && batchErrors && Object.keys(batchErrors).length > 0 && (
+                  <div className="batch-errors-panel">
+                    <strong>
+                      {Object.keys(batchErrors).length} student{Object.keys(batchErrors).length === 1 ? "" : "s"} could not be graded and {Object.keys(batchErrors).length === 1 ? "is" : "are"} not shown below:
+                    </strong>
+                    <ul>
+                      {Object.entries(batchErrors).map(([studentId, message]) => (
+                        <li key={studentId}>
+                          <span className="batch-error-student">{studentId}</span>: {message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 {isBatch && studentIds.length > 0 && (
                   <div className="student-tabs">
                     {studentIds.map((id) => (
@@ -2794,21 +2933,38 @@ const handleSpeak = (text, index) => {
                       const questionScore = item?.score || 0;
                       const questionMax = item?.max_score ?? 10;
                       const scoreTier = getScoreTier(questionScore, questionMax);
+                      const isReviewBusy = reviewLoading === noteKey;
+                      const reviewIssue = reviewError?.noteKey === noteKey ? reviewError.message : null;
+                      const isExpanded = expandOverride[noteKey] ?? !item?.human_reviewed;
+                      const toggleExpanded = () =>
+                        setExpandOverride((prev) => ({ ...prev, [noteKey]: !isExpanded }));
 
                       return (
-                        <article className="result-card" key={qid}>
-                          <div className="card-meta">
+                        <article className={`result-card ${!isExpanded ? "result-card-collapsed" : ""}`} key={qid}>
+                          <button type="button" className="card-meta card-meta-toggle" onClick={toggleExpanded}>
                             <div className="card-meta-title">
                               <h3>{item?.question_id || `Question ${idx + 1}`}</h3>
                               {item?.concept_tested && (
                                 <span className="concept-tag">{item.concept_tested}</span>
                               )}
                             </div>
-                            <span className={`badge-pill badge-pill-${scoreTier}`}>
-                              {formatScore(questionScore, questionMax)}
-                            </span>
-                          </div>
+                            <div className="card-meta-actions">
+                              {item?.human_reviewed ? (
+                                <span className="review-badge review-badge-done">
+                                  <Icon name="check" /> Reviewed
+                                </span>
+                              ) : item?.needs_human_review ? (
+                                <span className="review-badge review-badge-flagged">Flagged for review</span>
+                              ) : null}
+                              <span className={`badge-pill badge-pill-${scoreTier}`}>
+                                {formatScore(questionScore, questionMax)}
+                              </span>
+                              <Icon name={isExpanded ? "chevronUp" : "chevronDown"} />
+                            </div>
+                          </button>
 
+                          {isExpanded && (
+                          <>
                           <div className="feedback-panel">
                             <div className="feedback-text">
                               <Markdown>{item?.feedback || "No feedback provided."}</Markdown>
@@ -2819,9 +2975,37 @@ const handleSpeak = (text, index) => {
                                 <Markdown>{item.actionable_takeaway}</Markdown>
                               </div>
                             )}
+                            <div className="review-actions">
+                              {!item?.human_reviewed && (
+                                <button
+                                  type="button"
+                                  className="button button-primary button-sm"
+                                  disabled={isReviewBusy}
+                                  onClick={() => handleMarkReviewed(qid)}
+                                >
+                                  <Icon name="check" /> {isReviewBusy ? "Saving…" : "Looks correct, mark reviewed"}
+                                </button>
+                              )}
+                              {!isOpen && (
+                                <button
+                                  type="button"
+                                  className="button button-secondary button-sm"
+                                  onClick={() => {
+                                    setRegradeOpenFor(noteKey);
+                                    setDispute({
+                                      ...emptyDispute,
+                                      disputed_criterion: item?.criterion_scores?.[0]?.description || "",
+                                    });
+                                  }}
+                                >
+                                  It's wrong — request re-evaluation
+                                </button>
+                              )}
+                            </div>
+                            {reviewIssue && <p className="review-edit-error">{reviewIssue}</p>}
                           </div>
 
-                          {item?.criterion_scores?.length > 0 && (
+                          {item?.criterion_scores?.length > 1 && (
                             <ul className="rubric-list">
                               {item.criterion_scores.map((crit, cIdx) => (
                                 <li key={cIdx}>
@@ -2927,21 +3111,8 @@ const handleSpeak = (text, index) => {
                           )}
                           {note?.error && <div className="regrade-note regrade-note-error">{note.error}</div>}
 
-                          <div className="regrade-block">
-                            {!isOpen ? (
-                              <button
-                                className="button button-secondary button-sm"
-                                onClick={() => {
-                                  setRegradeOpenFor(noteKey);
-                                  setDispute({
-                                    ...emptyDispute,
-                                    disputed_criterion: item?.criterion_scores?.[0]?.description || "",
-                                  });
-                                }}
-                              >
-                                Request re-evaluation
-                              </button>
-                            ) : (
+                          {isOpen && (
+                            <div className="regrade-block">
                               <div className="regrade-form">
                                 {item?.criterion_scores?.length > 0 && (
                                   <label className="regrade-field">
@@ -3006,8 +3177,10 @@ const handleSpeak = (text, index) => {
                                   <p className="regrade-hint">Please describe the specific mistake in more detail (min 8 characters).</p>
                                 )}
                               </div>
-                            )}
-                          </div>
+                            </div>
+                          )}
+                          </>
+                          )}
                         </article>
                       );
                     })}
@@ -3154,8 +3327,8 @@ const handleSpeak = (text, index) => {
                             >
                               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                 <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-                                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
-                                <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                                <path className="sound-wave sound-wave-1" d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                                <path className="sound-wave sound-wave-2" d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
                               </svg>
                             </button>
                           )}

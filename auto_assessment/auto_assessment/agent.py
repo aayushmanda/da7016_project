@@ -108,6 +108,9 @@ class QuestionEvaluation(BaseModel):
         description="Core mathematical or scientific topic evaluated in this question.",
     )
     needs_human_review: bool = Field(default=False)
+    human_reviewed: bool = Field(
+        default=False, description="A human reviewer has explicitly reviewed this question."
+    )
     question_text: str = Field(
         default="",
         description="The exact question as printed in the question paper, copied verbatim.",

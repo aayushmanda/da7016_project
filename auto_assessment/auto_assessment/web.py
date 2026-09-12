@@ -1573,6 +1573,7 @@ async def regrade_question(request: Request):
             evidence_quote=str(body.get("evidence_quote") or "").strip() or None,
         )
         result = assessment_system.regrade_question(context, question_id, dispute)
+        result.question.human_reviewed = True
         persist_current_report(assessment_id, context["report"], context)
 
         if result.claim_verified and result.changed:
@@ -1590,6 +1591,40 @@ async def regrade_question(request: Request):
             "claim_verified": result.claim_verified,
             "explanation": result.explanation,
             "report": _reshape_report(context["report"], assessment_id),
+        }
+    except HTTPException:
+        raise
+    except (ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@app.post("/api/assessments/{assessment_id}/review")
+async def review_question(assessment_id: str, request: Request):
+    """
+    Records that a human reviewer looked at this question's AI score and
+    feedback and accepted it as-is. A reviewer who disagrees does not edit
+    the score directly here — they use /api/regrade to submit a rebuttal,
+    which re-runs the evaluation and marks the question reviewed itself.
+    """
+    try:
+        body = await request.json()
+        question_id = str(body.get("question_id") or "").strip()
+        if not question_id:
+            raise HTTPException(status_code=400, detail="question_id is required.")
+
+        user_email = get_user_email(request)
+        report, context = load_assessment(assessment_id, user_email)
+
+        question = next((item for item in report.evaluations if item.question_id == question_id), None)
+        if question is None:
+            raise HTTPException(status_code=404, detail=f"Question {question_id!r} was not found.")
+
+        question.human_reviewed = True
+        persist_current_report(assessment_id, report, context)
+
+        return {
+            "question": question.model_dump(),
+            "report": _reshape_report(report, assessment_id),
         }
     except HTTPException:
         raise

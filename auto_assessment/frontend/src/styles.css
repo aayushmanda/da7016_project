@@ -985,16 +985,6 @@ img, svg { max-width: 100%; }
   line-height: 1.5;
 }
 
-.ocr-provider {
-  flex: 0 0 auto;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: var(--brand-primary-soft);
-  color: var(--brand-primary-dark);
-  font-size: 0.78rem;
-  font-weight: 800;
-}
-
 .ocr-review-toggle {
   flex: 0 0 auto;
   display: inline-flex;

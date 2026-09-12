@@ -768,7 +768,7 @@ def _evaluate_batch_student(
             known_corrections=known_corrections,
         )
 
-    report = worker.auditor.run(report)
+    report = worker.auditor.run(report, student_work=student_work)
 
     reference_diagrams = shared.get("reference_diagrams") or {}
     for item in report.evaluations:

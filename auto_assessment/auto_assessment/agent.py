@@ -768,12 +768,36 @@ class EvaluatorAgent:
 
 
 class AuditAgent:
-    """Deterministic audit; verifies arithmetic invariants without extra LLM cost."""
+    """
+    Deterministic audit; verifies arithmetic invariants and evidence anchoring
+    without extra LLM cost.
 
-    def run(self, report: AssessmentReport) -> AssessmentReport:
+    The Evaluator is instructed to copy a verbatim evidence_quote from the
+    student's work for every criterion, but a prompt instruction is not a
+    guarantee — the model can still paraphrase or hallucinate a quote. This
+    checks each one against the actual transcript (the same substring check
+    /api/regrade already uses to validate a human-submitted evidence quote)
+    and flags the question for human review when a quote can't be found,
+    rather than silently trusting an unverifiable citation.
+    """
+
+    def run(self, report: AssessmentReport, student_work: str = "") -> AssessmentReport:
         errors = validate_report(report)
         if errors:
             raise ValueError("Invalid assessment report: " + "; ".join(errors))
+
+        if student_work.strip():
+            normalized_work = normalize_for_match(student_work)
+            for item in report.evaluations:
+                if item.needs_human_review:
+                    continue
+                has_unverified_evidence = any(
+                    crit.evidence_quote and normalize_for_match(crit.evidence_quote) not in normalized_work
+                    for crit in item.criterion_scores
+                )
+                if has_unverified_evidence:
+                    item.needs_human_review = True
+
         return report
 
 
@@ -874,7 +898,7 @@ class MultiAgentAssessmentSystem:
             prior_weak_areas=prior_weak_areas,
             known_corrections=known_corrections,
         )
-        report = self.auditor.run(report)
+        report = self.auditor.run(report, student_work=final_student)
 
         if visual_grading:
             diagrams = self.evaluator.generate_reference_diagrams(final_qp, final_rubric)
@@ -937,7 +961,7 @@ class MultiAgentAssessmentSystem:
         else:
             result.question.max_score = original.max_score
             result.question.score = min(result.question.score, original.max_score)
-            self.auditor.run(AssessmentReport(evaluations=[result.question]))
+            self.auditor.run(AssessmentReport(evaluations=[result.question]), student_work=context["student_work"])
 
         # The question text, the student's written answer, and the reference diagram are
         # immutable facts — a regrade can change the score/feedback, never what was actually

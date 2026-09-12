@@ -2892,20 +2892,6 @@ const handleSpeak = (text, index) => {
                   </div>
                 )}
 
-                {!looksUngradable && activeReport?.submission_mismatch_warning && (
-                  <div className="no-grade-panel">
-                    <div>
-                      <span className="dropzone-label">Possible wrong paper</span>
-                      <h2>This submission may not match the question paper</h2>
-                      <p>{activeReport.submission_mismatch_warning}</p>
-                      <p>
-                        Every question below has been marked for review as a precaution — please confirm this is the
-                        right submission before trusting any of these scores.
-                      </p>
-                    </div>
-                  </div>
-                )}
-
                 {looksUngradable && (
                   <div className="no-grade-panel">
                     <div>

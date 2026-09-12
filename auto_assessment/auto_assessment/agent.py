@@ -14,7 +14,7 @@ from google import genai
 from openai import OpenAI
 from PIL import Image
 from pdf2image import convert_from_bytes
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 # =====================================================================
@@ -141,15 +141,6 @@ class QuestionEvaluation(BaseModel):
 class AssessmentReport(BaseModel):
     evaluations: list[QuestionEvaluation] = Field(default_factory=list)
     overall_summary: str = Field(default="")
-    submission_mismatch_warning: str = Field(
-        default="",
-        description=(
-            "Non-empty only if the student submission does not appear to be an attempt at "
-            "THIS question paper at all — e.g. it's for a different subject, exam, or assignment "
-            "entirely. State briefly what looks wrong. Leave empty for a genuine attempt, even a "
-            "weak or mostly-blank one."
-        ),
-    )
     strengths: list[str] = Field(
         default_factory=list,
         description="Key conceptual strengths demonstrated across questions.",
@@ -158,6 +149,19 @@ class AssessmentReport(BaseModel):
         default_factory=list,
         description="Top 2-3 specific topics or execution habits to improve.",
     )
+
+    @model_validator(mode="after")
+    def check_evaluations_present(self) -> "AssessmentReport":
+        # By the time the Evaluator runs, both the question paper and student work are
+        # already confirmed non-empty (process_submission raises earlier otherwise), so an
+        # empty evaluations list is never legitimate — it means the model graded nothing.
+        # Raising here (rather than silently accepting it) lets call_with_retries treat this
+        # as a retryable failure and ask the model again.
+        if not self.evaluations:
+            raise ValueError(
+                "evaluations must not be empty — every question in the question paper must be scored."
+            )
+        return self
 
 
 class DiagramEntry(BaseModel):
@@ -322,6 +326,17 @@ def call_with_retries(
             status = _status_code(error)
             retryable = status is None or status == 429 or status >= 500
             if not retryable or attempt == retries:
+                if isinstance(error, ValidationError):
+                    # A pydantic ValidationError's default message is a multi-line internal
+                    # dump (field paths, type= tags, a docs URL) — never fit for a user-facing
+                    # error, and this is the only place that dump would otherwise leak: the
+                    # caller (an API endpoint's `except ValueError` branch) just does
+                    # `detail=str(error)`, trusting every ValueError raised here to already be
+                    # a hand-written, friendly message.
+                    raise ValueError(
+                        f"The grading model returned an incomplete result after {retries} attempts "
+                        "and couldn't be validated. Please try again."
+                    ) from error
                 raise
             delay = min(20.0, 1.5 * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
             print(f"[{label}] attempt {attempt}/{retries} failed: {error}; retrying in {delay:.1f}s")
@@ -656,13 +671,6 @@ class EvaluatorAgent:
         )
         prompt = (
             "You are an academic evaluator producing rigorous, highly actionable, and growth-oriented feedback.\n\n"
-            "SUBMISSION SANITY CHECK: Before grading, check whether the student submission is even an attempt at "
-            "THIS exact question paper. If it looks like a different subject, exam, or assignment entirely — not "
-            "just a weak, incomplete, or mostly-blank attempt at THIS one — set 'submission_mismatch_warning' to a "
-            "brief explanation of what looks wrong, then still grade each question as best you can against whatever "
-            "is actually there (scoring 0 wherever nothing relevant is found). A student who left every question "
-            "blank, or answered poorly, is still a genuine attempt and must NOT trigger this warning — leave it "
-            "empty in that case.\n\n"
             "GRADING & FEEDBACK REQUIREMENTS:\n"
             "1. STRICT EVIDENCE ANCHORING: For every criterion, copy a short verbatim evidence_quote from the student "
             "submission if present. Never hallucinate student working.\n"
@@ -820,12 +828,6 @@ class AuditAgent:
                 credited_with_no_answer = item.score > 0 and not item.student_answer.strip()
                 if has_unverified_evidence or credited_with_no_answer:
                     item.needs_human_review = True
-
-        # The submission doesn't appear to match this question paper at all — nothing in
-        # this report is trustworthy until a human confirms it, so every question is flagged.
-        if report.submission_mismatch_warning.strip():
-            for item in report.evaluations:
-                item.needs_human_review = True
 
         return report
 

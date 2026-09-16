@@ -29,7 +29,6 @@ BODHAN_OCR_MODEL = os.getenv("BODHAN_OCR_MODEL", "indic-ocr")
 BODHAN_OCR_MAX_TOKENS = int(os.getenv("BODHAN_OCR_MAX_TOKENS", "4096"))
 GRADING_MODEL = os.getenv("GEMINI_GRADING_MODEL", "gemini-3.5-flash-lite")
 CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.5-flash-lite")
-MAX_IMAGES_PER_REQUEST = int(os.getenv("MAX_IMAGES_PER_REQUEST", "10"))
 MAX_PDF_BYTES = 50 * 1024 * 1024
 PDF_OCR_DPI = int(os.getenv("PDF_OCR_DPI", "200"))
 OCR_CACHE_DIR = Path(
@@ -565,10 +564,6 @@ class TranscriberAgent:
     ) -> tuple[str, list[OcrPageResult]]:
         if not images:
             return "", []
-        if len(images) > MAX_IMAGES_PER_REQUEST:
-            raise ValueError(
-                f"{label} contains {len(images)} pages; maximum is {MAX_IMAGES_PER_REQUEST}."
-            )
 
         provider = "Bodhan OCR" if BODHAN_OCR_ENABLED else "Gemini OCR"
         print(f"[Transcriber] Sending {len(images)} {label} page(s) to {provider}")

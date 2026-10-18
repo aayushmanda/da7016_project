@@ -24,5 +24,20 @@ services:
       - "8080:80"
     restart: unless-stopped
 
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
 volumes:
   db_data:
+  caddy_data:
+  caddy_config:

@@ -884,46 +884,32 @@ function WorkflowProgress({
       </div>
 
       <div
-        className="workflow-stepper"
+        className="workflow-linear-track"
         role="progressbar"
         aria-valuenow={progress}
         aria-valuemin="0"
         aria-valuemax="100"
         aria-label={`${activeStep.label}: ${activeStep.detail}`}
       >
-        <div className="workflow-stepper-track">
-          <span className="workflow-stepper-track-fill" style={{ width: `${progress}%` }} />
-        </div>
-        <div className="workflow-stepper-items">
-          {WORKFLOW_STEPS.map((step, index) => {
-            const isDone = index < activeIndex;
-            const isActive = index === activeIndex;
-            return (
-              <div className="workflow-stepper-item" key={step.id}>
-                <span
-                  className={`workflow-node ${isDone ? "workflow-node-done" : ""} ${
-                    isActive ? "workflow-node-active" : ""
-                  }`}
-                >
-                  {isDone ? (
-                    <Icon name="check" />
-                  ) : isActive ? (
-                    <span className="workflow-node-pulse" />
-                  ) : (
-                    <span className="workflow-node-index">{index + 1}</span>
-                  )}
-                </span>
-                <span
-                  className={`workflow-step-label ${isDone ? "workflow-step-done" : ""} ${
-                    isActive ? "workflow-step-active" : ""
-                  }`}
-                >
-                  {step.label}
-                </span>
-              </div>
-            );
-          })}
-        </div>
+        <span className="workflow-linear-fill" style={{ width: `${progress}%` }} />
+      </div>
+
+      <div className="workflow-stage-list">
+        {WORKFLOW_STEPS.map((step, index) => {
+          const isDone = index < activeIndex;
+          const isActive = index === activeIndex;
+          return (
+            <span
+              key={step.id}
+              className={`workflow-stage ${isDone ? "workflow-stage-done" : ""} ${
+                isActive ? "workflow-stage-active" : ""
+              }`}
+            >
+              {isDone ? <Icon name="check" className="workflow-stage-check" /> : null}
+              {step.label}
+            </span>
+          );
+        })}
       </div>
     </div>
   );

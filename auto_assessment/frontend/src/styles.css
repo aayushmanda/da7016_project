@@ -1935,7 +1935,12 @@ textarea:focus-visible,
 @media (max-width: 860px) {
   .sidebar { display: none; }
   .app-shell { flex-direction: column; }
-  .app-main { max-width: 100%; padding: 16px 16px 90px; }
+  .app-main,
+  .app-main-sidebar-collapsed {
+    width: 100%;
+    max-width: 100%;
+    padding: 16px 16px 90px;
+  }
 
 
   .mobile-tabbar {

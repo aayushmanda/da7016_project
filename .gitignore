@@ -7,3 +7,5 @@ __pycache__/
 .cache/
 auto_assessment/frontend/node_modules/
 auto_assessment/frontend/dist/
+*.db
+.DS_Store

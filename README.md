@@ -6,10 +6,11 @@ Handles PDFs, images, plain text, and DOCX. Grades one submission or a whole bat
 
 <video src="https://github.com/user-attachments/assets/8414c893-983e-415e-8052-bd8e116cb301" controls width="100%"></video>
 
+Can't see the video above? It's also at [`docs/run.mp4`](docs/run.mp4).
 
-
-
-
+| Upload | Score Feed | Agent Chat |
+|---|---|---|
+| ![Upload](docs/images/upload.png) | ![Score Feed](docs/images/score_feed.png) | ![Agent Chat](docs/images/agent_chat.png) |
 
 ---
 
@@ -74,7 +75,6 @@ Create `.env` in the repo root:
 | `GEMINI_GRADING_MODEL` / `GEMINI_CHAT_MODEL` | no | override the default model per stage |
 | `BATCH_CONCURRENCY` | no | concurrent Gemini calls in a batch grading run (default `3`) |
 | `MAX_BATCH_SIZE` | no | max students per batch (default `25`) |
-| `MAX_IMAGES_PER_REQUEST` | no | max image/PDF pages per single upload (default `10`; PDFs are converted to page images for OCR) |
 
 Run both servers (two terminals):
 
@@ -98,7 +98,20 @@ Or use `./start.sh` from the repo root to launch both together.
 docker compose up -d --build
 ```
 
-Frontend: `http://localhost:8080` (nginx, proxies `/api` and `/ws` to the backend container) · Backend directly: `http://localhost:8001`. SQLite data persists in a named volume (`db_data`) across rebuilds. Requires `.env` in the repo root (same variables as above) — `docker-compose.yml` loads it via `env_file`.
+Three services: `backend` (FastAPI), `frontend` (static build served by nginx, which proxies `/api` and `/ws` to the backend container), and `caddy` (reverse proxy in front of `frontend`, for automatic HTTPS in a cloud deployment).
+
+- Frontend: `http://localhost:8080` · Backend directly: `http://localhost:8001`
+- SQLite data persists in a named volume (`db_data`) across rebuilds
+- Requires `.env` in the repo root (same variables as above) — `docker-compose.yml` loads it via `env_file`
+- `poppler-utils` is installed in the backend image for `pdf2image`; without it, PDF OCR fails with "Could not convert PDF pages for OCR"
+
+**Deploying with HTTPS on a real host:** edit [`Caddyfile`](Caddyfile) to use your domain (or a free wildcard like `<your-ip>.nip.io` if you don't have one), open ports 80/443, and Caddy will fetch and renew a Let's Encrypt certificate automatically. Running `docker compose up` elsewhere without editing the Caddyfile will leave the `caddy` service retrying certificate issuance for a hostname it doesn't own — harmless, but `frontend`/`backend` work fine on their own ports regardless.
+
+### Tests
+
+```bash
+python -m unittest tests/test_core.py
+```
 
 ---
 
@@ -163,17 +176,27 @@ da7016_project/
 │   ├── auto_assessment/
 │   │   ├── agent.py            # multi-agent pipeline + Pydantic contracts
 │   │   ├── web.py              # FastAPI backend + persistence
+│   │   ├── history.py          # per-student weak-area / correction memory
 │   │   └── document_parser.py  # PDF/image/text/DOCX parsing
 │   └── frontend/
 │       ├── src/App.jsx
+│       ├── src/main.jsx
 │       ├── src/styles.css
+│       ├── public/favicon.svg
 │       ├── package.json
+│       ├── vite.config.js
 │       ├── Dockerfile          # build → nginx static + /api, /ws proxy
 │       └── nginx.conf
+├── tests/
+│   └── test_core.py
+├── docs/
+│   ├── run.mp4
+│   └── images/
 ├── requirements.txt
 ├── Dockerfile                  # backend image
 ├── docker-compose.yml
-├── start.sh
+├── Caddyfile                   # HTTPS reverse proxy config for cloud deploys
+├── start.sh                    # run backend + frontend dev servers together
 └── LICENSE
 ```
 

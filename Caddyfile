@@ -1,3 +1,8 @@
 34.10.46.238.nip.io {
-	reverse_proxy frontend:80
+	handle /_deploy {
+		reverse_proxy host.docker.internal:9000
+	}
+	handle {
+		reverse_proxy frontend:80
+	}
 }

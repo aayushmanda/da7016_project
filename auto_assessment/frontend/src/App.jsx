@@ -2374,8 +2374,13 @@ const handleSpeak = (text, index) => {
                 <span className="dropzone-label">1. Rubric & Question Paper</span>
                 <label className="upload-pill">
                   <span className="upload-icon" aria-hidden="true"><Icon name="document" /></span>
-                  <span className="upload-text">
-                    {rubricFile ? rubricFile.name : "Attach rubric — PDF, image, or text"}
+                  <span className="upload-text-group">
+                    <span className="upload-text">
+                      {rubricFile ? rubricFile.name : "Click to upload or drag and drop"}
+                    </span>
+                    <span className="upload-hint">
+                      {rubricFile ? "Tap to replace" : "PDF, image, or text"}
+                    </span>
                   </span>
                   <input
                     type="file"
@@ -2399,10 +2404,17 @@ const handleSpeak = (text, index) => {
                 </span>
                 <label className="upload-pill">
                   <span className="upload-icon" aria-hidden="true"><Icon name="note" /></span>
-                  <span className="upload-text">
-                    {answerFiles.length === 0
-                      ? "Attach one or more answer sheets — PDF, image, or text"
-                      : `${answerFiles.length} file${answerFiles.length > 1 ? "s" : ""} selected — add more or remove below`}
+                  <span className="upload-text-group">
+                    <span className="upload-text">
+                      {answerFiles.length === 0
+                        ? "Click to upload or drag and drop"
+                        : `${answerFiles.length} file${answerFiles.length > 1 ? "s" : ""} selected`}
+                    </span>
+                    <span className="upload-hint">
+                      {answerFiles.length === 0
+                        ? "PDF, image, or text — multiple files allowed"
+                        : "Add more or remove below"}
+                    </span>
                   </span>
                   <input
                     type="file"
@@ -2467,8 +2479,13 @@ const handleSpeak = (text, index) => {
                     <span className="dropzone-label">Official Model Answer (optional, recommended)</span>
                     <label className="upload-pill">
                       <span className="upload-icon" aria-hidden="true"><Icon name="document" /></span>
-                      <span className="upload-text">
-                        {modelAnswerFile ? modelAnswerFile.name : "Attach official answer key — PDF, image, or text"}
+                      <span className="upload-text-group">
+                        <span className="upload-text">
+                          {modelAnswerFile ? modelAnswerFile.name : "Click to upload or drag and drop"}
+                        </span>
+                        <span className="upload-hint">
+                          {modelAnswerFile ? "Tap to replace" : "PDF, image, or text"}
+                        </span>
                       </span>
                       <input
                         type="file"

@@ -923,11 +923,11 @@ img, svg { max-width: 100%; }
 
 
 .dropzone-card {
-  display: flex; flex-direction: column; gap: 10px; padding: 18px;
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md);
+  display: flex; flex-direction: column; gap: 12px; padding: 20px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.dropzone-card:hover { border-color: var(--blue); box-shadow: 0 1px 3px rgba(60, 64, 67, 0.1); }
+.dropzone-card:hover { border-color: var(--brand-border); box-shadow: 0 1px 4px var(--shadow-soft); }
 
 
 .dropzone-label {
@@ -937,21 +937,35 @@ img, svg { max-width: 100%; }
 
 
 .upload-pill {
-  display: flex; align-items: center; gap: 10px; padding: 12px 14px;
-  border-radius: var(--radius-sm); background: var(--surface-muted);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 28px 16px; text-align: center;
+  border-radius: var(--radius-md); background: var(--surface-muted);
   border: 1.5px dashed var(--line); color: var(--ink); cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease; min-height: 46px;
+  transition: background 0.15s ease, border-color 0.15s ease; min-height: 150px;
 }
-.upload-pill:hover { background: var(--blue-tint); border-color: var(--brand-primary); }
+.upload-pill:hover { background: var(--brand-primary-soft); border-color: var(--brand-primary); }
 
 .upload-icon {
   flex-shrink: 0;
   display: inline-flex;
-  color: var(--blue);
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--brand-primary-soft);
+  color: var(--brand-primary-dark);
 }
-.upload-icon svg { width: 19px; height: 19px; }
+.upload-icon svg { width: 22px; height: 22px; }
 
-.upload-text { font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-text-group {
+  display: flex; flex-direction: column; gap: 3px; max-width: 260px;
+}
+.upload-text {
+  font-size: 0.92rem; font-weight: 600; color: var(--ink);
+  overflow-wrap: break-word; word-break: break-word;
+}
+.upload-hint { font-size: 0.8rem; color: var(--ink-faint); }
 .upload-pill input { display: none; }
 
 .ocr-review {
@@ -1523,9 +1537,12 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
-  color: var(--ink-faint);
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--brand-primary-soft);
+  color: var(--brand-primary-dark);
+  margin-bottom: 4px;
 }
 .empty-icon svg { width: 28px; height: 28px; }
 

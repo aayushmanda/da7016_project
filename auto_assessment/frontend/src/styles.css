@@ -879,6 +879,13 @@ img, svg { max-width: 100%; }
   letter-spacing: 0.04em; color: var(--ink-soft);
 }
 
+.dropzone-caption {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
 
 .upload-pill {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -1631,6 +1638,8 @@ textarea:focus-visible,
 
 .feedback-tip svg { width: 15px; height: 15px; flex: 0 0 auto; margin-top: 2px; color: var(--ink-faint); }
 
+
+.rubric-breakdown { display: flex; flex-direction: column; gap: 8px; }
 
 .rubric-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 

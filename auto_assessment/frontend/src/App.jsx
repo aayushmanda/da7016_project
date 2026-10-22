@@ -2356,6 +2356,12 @@ const handleSpeak = (text, index) => {
             <div className="upload-grid">
               <div className="dropzone-card">
                 <span className="dropzone-label">1. Rubric & Question Paper</span>
+                <p className="dropzone-caption">
+                  Must include the grading criteria (rubric) — either written into the
+                  question paper itself, as a separate marking scheme in the same file,
+                  or combined into one document. Without a rubric, grading falls back to
+                  the model's own judgment of correctness.
+                </p>
                 <label className="upload-pill">
                   <span className="upload-icon" aria-hidden="true"><Icon name="document" /></span>
                   <span className="upload-text-group">
@@ -3055,8 +3061,10 @@ const handleSpeak = (text, index) => {
                             {reviewIssue && <p className="review-edit-error">{reviewIssue}</p>}
                           </div>
 
-                          {item?.criterion_scores?.length > 1 && (
-                            <ul className="rubric-list">
+                          {item?.criterion_scores?.length > 0 && (
+                            <div className="rubric-breakdown">
+                              <span className="dropzone-label">Rubric criteria applied</span>
+                              <ul className="rubric-list">
                               {item.criterion_scores.map((crit, cIdx) => (
                                 <li key={cIdx}>
                                   {renderStatusIcon(crit.score, crit.weight)}
@@ -3073,7 +3081,8 @@ const handleSpeak = (text, index) => {
                                   </span>
                                 </li>
                               ))}
-                            </ul>
+                              </ul>
+                            </div>
                           )}
 
                           {(item?.question_text || item?.student_answer || item?.reference_diagram_svg) && (

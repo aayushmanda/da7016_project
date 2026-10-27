@@ -4,7 +4,8 @@ A multi-agent grading system that evaluates handwritten and typed student answer
 
 Handles PDFs, images, plain text, and DOCX. Grades one submission or a whole batch against the same rubric.
 
-<video src="https://github.com/user-attachments/assets/8414c893-983e-415e-8052-bd8e116cb301" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/38659e87-2190-484f-96aa-4487e749f720
+" controls width="100%"></video>
 
 Can't see the video above? It's also at [`docs/run.mp4`](docs/run.mp4).
 

@@ -1,10 +1,11 @@
+
 # Auto-Assessment Agent
 
 A multi-agent grading system that evaluates handwritten and typed student answer sheets against a question paper, rubric, and (optional) model answer — evidence-anchored, criterion-level, with deterministic score auditing.
 
 Handles PDFs, images, plain text, and DOCX. Grades one submission or a whole batch against the same rubric.
 
-<video src="https://github.com/user-attachments/assets/01cc3353-22be-459b-84f9-79ea48674cf7" controls width="80%"></video>
+<img width="400" height="231" alt="run" src="https://github.com/user-attachments/assets/7fb242fa-4add-4cc7-b94d-a45f7319dea1" />
 
 Can't see the video above? It's also at [`docs/run.mp4`](docs/run.mp4).
 

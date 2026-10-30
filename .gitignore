@@ -1,7 +1,6 @@
 examples
 .env
-# .venv
-auto_assessment/__pycache__
+.venv/
 __pycache__/
 *.py[cod]
 .cache/

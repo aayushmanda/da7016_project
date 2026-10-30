@@ -1,6 +1,8 @@
 
 # Auto-Assessment Agent
 
+[Application link! Try it](https://34.10.46.238.nip.io/)
+
 A multi-agent grading system that evaluates handwritten and typed student answer sheets against a question paper, rubric, and (optional) model answer — evidence-anchored, criterion-level, with deterministic score auditing.
 
 Handles PDFs, images, plain text, and DOCX. Grades one submission or a whole batch against the same rubric.

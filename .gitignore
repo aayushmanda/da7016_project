@@ -8,3 +8,8 @@ auto_assessment/frontend/node_modules/
 auto_assessment/frontend/dist/
 *.db
 .DS_Store
+
+# Personal recording aids, not project docs
+docs/video_script.md
+docs/video_script.pdf
+docs/live_demo_script.pdf

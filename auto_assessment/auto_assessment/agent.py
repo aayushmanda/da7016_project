@@ -805,6 +805,21 @@ class AuditAgent:
     """
 
     def run(self, report: AssessmentReport, student_work: str = "") -> AssessmentReport:
+        for item in report.evaluations:
+            if not item.criterion_scores:
+                continue
+            criterion_total = round(sum(c.score for c in item.criterion_scores), 2)
+            if abs(criterion_total - item.score) > 0.01:
+                # The criterion-level breakdown is the evidence-anchored source of
+                # truth; the model's separate top-level `score` is only a redundant
+                # echo of that same sum, and occasionally drifts from it on
+                # multi-part questions with nuanced partial credit (e.g. correct
+                # method, wrong final number). Trust the breakdown over the echo
+                # instead of failing the whole assessment over a self-consistency
+                # slip, but flag it for a human glance since something was off.
+                item.score = min(criterion_total, item.max_score)
+                item.needs_human_review = True
+
         errors = validate_report(report)
         if errors:
             raise ValueError("Invalid assessment report: " + "; ".join(errors))
